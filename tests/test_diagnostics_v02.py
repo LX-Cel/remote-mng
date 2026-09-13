@@ -84,6 +84,50 @@ async def test_missing_remote_exit_never_confirms_probe_success(tmp_path, monkey
         await manager.close()
 
 
+@pytest.mark.parametrize("capabilities,health_error,ready", [
+    ({}, False, False),
+    ({"storage_protocol": 1}, False, False),
+    ({"storage_protocol": 1, "log_rotation": False}, False, False),
+    ({"storage_protocol": 2, "log_rotation": True}, False, False),
+    ({"storage_protocol": 1, "log_rotation": "true"}, False, False),
+    ({"storage_protocol": 1, "log_rotation": True}, False, True),
+    ({"storage_protocol": 1, "log_rotation": True}, True, False),
+], ids=["old-helper", "missing-rotation", "rotation-disabled", "unknown-protocol", "invalid-rotation", "current-helper", "health-unavailable"])
+async def test_job_readiness_requires_current_storage_capabilities(tmp_path, monkeypatch, capabilities, health_error, ready):
+    manager = Manager(tmp_path)
+    manager.config.put("board", {"host": "example.invalid", "protocol": "telnet", "shell": "posix"})
+    monkeypatch.setattr(manager, "target_check", AsyncMock(return_value={"connected": True, "protocol": "telnet"}))
+    monkeypatch.setattr("remote_mng.diagnostics.transports.run_command", AsyncMock(return_value={
+        "exit_code": 0, "stdout": "shell\tposix\nlinux\tyes\nhelper\tpresent\nhelper_dir\twritable\n",
+        "stderr": "", "outcome": "completed",
+    }))
+    monkeypatch.setattr("remote_mng.diagnostics.JobClient.inspect", AsyncMock(return_value={
+        "protocol": 1, "supported": True, **capabilities,
+    }))
+    health = AsyncMock(return_value={"protocol": 1, "storage_protocol": 1, "free_bytes": 16 * 1024 * 1024})
+    if health_error:
+        from remote_mng.errors import RemoteError
+        health.side_effect = RemoteError("helper_command_failed", "Storage evidence unavailable")
+    monkeypatch.setattr("remote_mng.diagnostics.JobClient.health", health)
+    try:
+        result = await inspect_target(manager, "board")
+        assert result["job_ready"] is ready
+        assert result["state"] == ("ready" if ready else "needs_attention")
+        if health_error:
+            health.assert_awaited_once()
+            return
+        storage = next(item for item in result["checks"] if item["name"] == "helper_storage")
+        assert storage["state"] == ("pass" if ready else "warning")
+        if ready:
+            health.assert_awaited_once()
+        else:
+            health.assert_not_awaited()
+            assert "Existing jobs remain queryable" in storage["advice"]
+            assert "before submitting new jobs" in storage["advice"]
+    finally:
+        await manager.close()
+
+
 def write_recipe(base, source):
     manifest = base / "rmg-project.json"
     manifest.write_text(json.dumps({"version": 1, "name": "Review", "target": "board", "steps": [

@@ -127,15 +127,15 @@ async def inspect_target(manager, target, directory=None):
                         supported = probe.get("protocol") == 1 and probe.get("supported") is True
                         checks.append(check("helper", "pass" if supported else "warning", "Installed helper protocol checked",
                                             None if supported else "Install the helper supplied with this tool.", protocol=probe.get("protocol")))
-                        if supported and probe.get("storage_protocol"):
+                        if supported and probe.get("storage_protocol") == 1 and probe.get("log_rotation") is True:
                             health = await helper.health()
                             free = health.get("free_bytes")
                             enough = isinstance(free, int) and free >= cfg.get("helper_min_free_bytes", 8 * 1024 * 1024)
                             checks.append(check("helper_storage", "pass" if enough else "warning", "Remote helper storage inspected",
                                                 None if enough else "Inspect terminal jobs and preview explicit cleanup; preserve active and unknown jobs.", **health))
-                        elif supported:
-                            checks.append(check("helper_storage", "not_checked", "Installed helper has no storage protocol",
-                                                "Existing jobs remain queryable; install the bundled helper to enable storage health and log rotation."))
+                        else:
+                            checks.append(check("helper_storage", "warning", "Installed helper does not support the current storage protocol and log rotation",
+                                                "Existing jobs remain queryable; install the bundled helper before submitting new jobs."))
                     except RemoteError:
                         checks.append(check("helper", "warning", "Installed helper could not confirm support", "Review target capabilities before reinstalling the helper."))
                 else:
@@ -170,8 +170,11 @@ async def inspect_target(manager, target, directory=None):
     state = "needs_attention" if any(c["state"] in {"fail", "warning"} for c in checks) else "ready"
     result = {"target": target, "state": state, "checked_at": time.time(), "connection": connection,
               "checks": checks, "scope": "read_only_probe", "shell_declared": cfg.get("shell"),
-              "job_ready": cfg.get("shell") == "posix" and any(c["name"] == "helper" and c["state"] == "pass" for c in checks)
-                           and not any(c["name"] in ("job_dependencies", "helper_storage", "posix_shell") and c["state"] in ("fail", "warning") for c in checks)}
+              "job_ready": cfg.get("shell") == "posix"
+                           and all(any(c["name"] == name and c["state"] == "pass" for c in checks)
+                                   for name in ("helper", "helper_storage", "job_dependencies", "posix_shell"))
+                           and not any(c["name"] in ("helper", "job_dependencies", "helper_storage", "posix_shell")
+                                       and c["state"] in ("fail", "warning") for c in checks)}
     result = redactor.structured(result)
     key = "inspection-" + hashlib.sha256(target.encode()).hexdigest()[:24]
     manager.store.put({"id": key, "kind": "target_inspection", **result})
