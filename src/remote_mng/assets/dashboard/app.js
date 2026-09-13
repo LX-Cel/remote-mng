@@ -68,12 +68,12 @@
     $("notice").hidden = !message;
   };
 
-  async function api(path, method = "GET") {
+  async function api(path, method = "GET", body = {}) {
     if (!token) throw new Error("控制台尚未解锁。请让 Agent 运行 rmg ui，使用返回的本地链接打开控制台。");
     const response = await fetch("/ui/api/" + path, {
       method, cache: "no-store", credentials: "omit",
       headers: {Authorization: "Bearer " + token, ...(method === "POST" ? {"Content-Type": "application/json"} : {})},
-      ...(method === "POST" ? {body: "{}"} : {}),
+      ...(method === "POST" ? {body: JSON.stringify(body)} : {}),
     });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
@@ -81,6 +81,47 @@
       throw new Error(payload.error?.message || "暂时无法读取状态，请稍后重试。");
     }
     return payload.result;
+  }
+
+  const bytes = (value) => typeof value !== "number" ? "尚未测量"
+    : value < 1024 ? value + " B" : value < 1048576 ? (value / 1024).toFixed(1) + " KiB"
+      : value < 1073741824 ? (value / 1048576).toFixed(1) + " MiB" : (value / 1073741824).toFixed(1) + " GiB";
+  const stageNames = {dns: "解析地址", tcp: "连接端口", proxy: "连接代理", jump: "连接跳板",
+    host_key: "核验主机身份", authentication: "认证", login: "登录流程", login_flow: "登录流程",
+    shell: "确认 Shell", sftp: "建立文件通道", transfer: "传输文件"};
+  function evidence(value) {
+    const details = el("details");
+    details.append(el("summary", "故障证据与恢复建议", "small"), el("pre", JSON.stringify(value, null, 2)));
+    return details;
+  }
+
+  function renderAttention(items) {
+    if (!changed("attention", items)) return;
+    const container = $("attention");
+    container.replaceChildren();
+    if (!items.length) container.append(empty("当前记录中没有需要关注的故障；远端状态以最后一次观测为准。"));
+    for (const item of items) {
+      const card = el("article", null, "target-card");
+      const top = el("div", null, "row-top");
+      top.append(el("h3", item.target || "本地任务"), badge(item.state));
+      card.append(top, el("p", item.message), el("p", stamp(item.observed_at), "small"));
+      if (item.evidence?.stage) {
+        const sent = {not_sent: "业务命令尚未发送", sent: "业务输入已经发送，请先查询原记录", unknown: "是否执行仍待确认"};
+        card.append(el("p", `失败位置：${stageNames[item.evidence.stage] || item.evidence.stage} · ${sent[item.evidence.business_input] || "检查原记录"}`, "advice"));
+      }
+      if (item.advice) card.append(el("p", item.advice, "advice"));
+      if (item.evidence) card.append(evidence(item.evidence));
+      if (item.task_id) card.append(button("查看任务", async () => {
+        selectedTask = item.task_id; renderTasks(snapshot.tasks); await refreshTask();
+        $("task-detail").scrollIntoView({behavior: "smooth", block: "nearest"});
+      }));
+      const prompt = `请使用 remote-mng 检查${item.task_id ? "任务 " + item.task_id : "设备 " + item.target}的最新状态。先读取故障阶段与证据，结果未知时查询原任务，不重发业务命令。说明修复依据并继续已授权的工作。`;
+      card.append(button("复制给 Agent", async () => {
+        try { await navigator.clipboard.writeText(prompt); notice("已复制，把这段话交给当前 Agent 即可。"); }
+        catch { notice(prompt); }
+      }));
+      container.append(card);
+    }
   }
 
   function renderTargets(targets) {
@@ -102,10 +143,22 @@
         for (const item of checks) {
           const line = el("p", `${item.label || item.name || item.code || "检查"}：${item.message || item.summary || stateName(item.state || item.status)}`, "small");
           details.append(line);
+          if (item.advice) details.append(el("p", item.advice, "advice"));
+          if (item.diagnostic) details.append(evidence(item.diagnostic));
         }
         card.append(details);
       }
       const bottom = el("div", null, "row-bottom");
+      if (target.storage) {
+        card.append(el("p", `Helper 存储：已用 ${bytes(target.storage.used_bytes)} · 可用 ${bytes(target.storage.free_bytes)} · 每流上限 ${bytes(target.storage.max_log_bytes)}`, "small"));
+        card.append(el("p", "存储观测 · " + stamp(target.storage.checked_at), "small"));
+      }
+      const healthButton = button("检查存储", async () => {
+        healthButton.disabled = true;
+        try { await api("targets/" + encodeURIComponent(target.name) + "/health", "POST"); notice(); await refreshOverview(); }
+        catch (error) { notice(error.message); }
+        finally { healthButton.disabled = false; }
+      });
       const checkButton = button(busyTargets.has(target.name) ? "检查中…" : "检查设备", async () => {
         busyTargets.add(target.name);
         renderTargets(snapshot.targets);
@@ -116,7 +169,7 @@
         finally { busyTargets.delete(target.name); await refreshOverview(); }
       });
       checkButton.disabled = busyTargets.has(target.name);
-      bottom.append(el("span", check ? stamp(check.checked_at || check.observed_at) : "远端状态尚未检查", "small"), checkButton);
+      bottom.append(el("span", check ? stamp(check.checked_at || check.observed_at) : "远端状态尚未检查", "small"), checkButton, healthButton);
       card.append(bottom);
       container.append(card);
     }
@@ -174,7 +227,12 @@
         item.append(el("p", "最后确认的状态：" + stateName(step.last_confirmed_state) + "；当前远端结果待确认。"));
       }
       if (step.error) item.append(el("pre", `${step.error.code || "错误"}: ${step.error.message || JSON.stringify(step.error)}`));
+      if (step.error?.details?.diagnostic) item.append(evidence(step.error.details.diagnostic));
       const details = step.result || step.observation;
+      if (details?.logs_draining || details?.result?.logs_draining) {
+        const status = details.result || details;
+        item.append(el("p", `脚本已退出（${status.script_exit_code ?? "待确认"}），后台进程仍占用输出管道。先核对原作业和启动脚本的输出重定向，不重复部署。`, "advice"));
+      }
       if (details) {
         const disclosure = el("details");
         disclosure.append(el("summary", "查看操作结果", "small"), el("pre", JSON.stringify(details, null, 2)));
@@ -189,18 +247,53 @@
     const canCancel = (task.steps || []).some((step) => step.resource?.kind === "job" && !["succeeded", "failed", "cancelled"].includes(step.state));
     $("refresh-task").hidden = !hasJob;
     $("cancel-task").hidden = !canCancel;
+    if (hasJob) {
+      const cleanup = el("div", null, "advice");
+      const preview = button("预览日志清理", async () => {
+        preview.disabled = true;
+        try {
+          const plan = await api("tasks/" + encodeURIComponent(task.id) + "/cleanup", "POST");
+          const eligible = (plan.jobs || []).filter((job) => job.eligible).length;
+          cleanup.replaceChildren(el("p", `${eligible} / ${plan.jobs?.length || 0} 个作业符合清理条件。只清理日志，保留作业 ID 与退出结果。`));
+          const jobs = el("ul");
+          for (const job of plan.jobs || []) jobs.append(el("li", `${job.job_id} · ${stateName(job.state)} · ${job.eligible ? "可清理" : "不可清理"}${job.exit_code !== undefined ? " · 退出码 " + job.exit_code : ""}`));
+          const full = el("details");
+          full.append(el("summary", "查看完整清理计划"), el("pre", JSON.stringify(plan, null, 2)));
+          cleanup.append(jobs, full);
+          const apply = button("按此预览清理日志", async () => {
+            if (!confirm("这些日志清理后无法恢复。确认按当前预览清理？")) return;
+            apply.disabled = true;
+            try {
+              const result = await api("tasks/" + encodeURIComponent(task.id) + "/cleanup", "POST", {apply: true, expected_plan: plan.plan_id});
+              cleanup.replaceChildren(el("p", "清理完成，作业 ID 和结果继续保留。"), el("pre", JSON.stringify(result, null, 2)));
+            } catch (error) { notice(error.message); apply.disabled = false; }
+          }, "danger");
+          apply.disabled = !plan.jobs?.length || plan.jobs.some((job) => !job.eligible);
+          cleanup.append(apply);
+        } catch (error) { notice(error.message); preview.disabled = false; }
+      });
+      cleanup.append(el("p", "释放已结束作业占用的日志空间。先查看范围，再确认清理。"), preview);
+      container.append(cleanup);
+    }
   }
 
   function renderActivities(records, containerId, kind) {
     if (!changed(containerId, records)) return;
     const container = $(containerId);
     container.replaceChildren();
-    const visible = records.filter((item) => !["task", "target_inspection"].includes(item.kind)).slice(0, 30);
+    const visible = records.filter((item) => !["task", "target_inspection", "storage_health"].includes(item.kind)).slice(0, 30);
     if (!visible.length) container.append(empty(kind === "session" ? "暂无终端会话。" : "暂无操作记录。"));
     for (const record of visible) {
       const row = el("div", null, "activity-row");
       const info = el("div");
       info.append(el("strong", `${record.target || "本地"} · ${record.kind || kind}`), el("p", `${short(record.id)} · ${stamp(record.updated_at || record.created_at)}`));
+      if (record.progress) {
+        const p = record.progress;
+        info.append(el("p", `传输进度 · ${p.completed_files ?? 0} / ${p.total_files ?? "—"} 个文件 · ${bytes(p.bytes_transferred)} / ${bytes(p.total_bytes)}`, "small"));
+        if (p.path) info.append(el("p", "当前文件 · " + p.path, "small"));
+      }
+      if (record.shell) info.append(el("p", "Shell · " + stateName(record.shell.state), "small"));
+      if (record.error?.details?.diagnostic) info.append(evidence(record.error.details.diagnostic));
       const status = el("div", null, "activity-status");
       status.append(badge(record.state, record.kind === "job_reference" && record.state === "succeeded" ? "提交已记录" : undefined));
       if (record.kind !== "job_reference") status.append(button("日志", () => chooseLog({kind, id: record.id}, `${record.target || ""} / ${short(record.id)}`)));
@@ -229,11 +322,12 @@
       $("last-update").textContent = "本地更新 · " + new Date().toLocaleTimeString("zh-CN", {hour12: false});
       $("count-targets").textContent = snapshot.targets.length;
       $("count-running").textContent = snapshot.tasks.filter((task) => ["running", "pending"].includes(task.state)).length;
-      $("count-attention").textContent = snapshot.tasks.filter((task) => ["failed", "unknown", "needs_attention"].includes(task.state)).length;
+      $("count-attention").textContent = (snapshot.attention || []).length;
       $("count-sessions").textContent = snapshot.counts?.active_sessions ?? snapshot.sessions.filter((session) => session.state === "open").length;
       $("task-list-scope").textContent = `显示最近 ${snapshot.tasks.length} 条任务，最多 ${snapshot.limits?.tasks || 100} 条；选择查看步骤。`;
       $("activity-scope").textContent = `操作显示最近 ${Math.min(30, snapshot.operations.length)} / ${snapshot.counts?.operations_total ?? snapshot.operations.length} 条；会话显示最近 ${Math.min(30, snapshot.sessions.length)} / ${snapshot.counts?.sessions_total ?? snapshot.sessions.length} 条。`;
       renderTargets(snapshot.targets);
+      renderAttention(snapshot.attention || []);
       renderTasks(snapshot.tasks);
       renderActivities(snapshot.operations, "operations", "operation");
       renderActivities(snapshot.sessions, "sessions", "session");
@@ -275,6 +369,8 @@
       } else if (log.log_truncated && offset === 0) {
         prefix = "\n[此记录的日志曾触及容量限制，历史输出可能不完整。]\n";
       }
+      if (log.logs_deleted) prefix += "\n[日志已按清理计划删除；作业 ID 与退出结果仍可查询。]\n";
+      if (log.log_incomplete) prefix += "\n[远端记录日志时发生存储错误；输出不完整，请勿据此判断业务成功。]\n";
       const output = $("log-output");
       output.textContent += prefix + (log.data || "");
       if (output.textContent.length > 600000) output.textContent = "[为保持页面响应，仅显示最近 600000 个字符。]\n" + output.textContent.slice(-600000);

@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import aiohttp
 from filelock import FileLock
@@ -15,6 +14,7 @@ from filelock import FileLock
 from .config import home_path
 from .errors import RemoteError
 from . import __version__
+from .runtime import command_prefix, subprocess_environment
 
 
 def runtime_dir(home: Path) -> Path:
@@ -90,8 +90,9 @@ class Client:
             info = self.info()
             if await self.healthy(info):
                 return info
-            args = [sys.executable, "-m", "remote_mng", "--home", str(self.home), "server", "run"]
-            kwargs = {"stdin": subprocess.DEVNULL, "close_fds": True, "cwd": str(self.home)}
+            args = [*command_prefix(), "--home", str(self.home), "server", "run"]
+            kwargs = {"stdin": subprocess.DEVNULL, "close_fds": True, "cwd": str(self.home),
+                      "env": subprocess_environment(independent=True)}
             if os.name == "nt":
                 kwargs["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP |
                                            subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB)

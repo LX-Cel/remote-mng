@@ -18,7 +18,7 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target list
 
 首次接入或升级先运行 `doctor --json`；部署前用 `target inspect TARGET --json` 检查目标。缺少 helper 不影响普通终端，不要未经任务需要就安装。参数不确定时可读 `schema --json`，参数错误也有 JSON 错误码与帮助入口。
 
-安装器生成的脚本绑定安装工具时的 Python，可在任意项目使用。它不依赖当前仓库、`CLAUDE.md`、`uv run`、Claude 的 `rmg` PATH 或 MCP。只有手工复制的源码版脚本需要 `rmg` 已在当前 PATH；若入口缺失或其绑定环境已移除，说明安装问题，使用有效工具环境重新执行 `rmg skill install`，不要猜其他解释器或自动改用 MCP。
+安装器生成的脚本绑定工具入口：源码安装绑定 Python，独立发行包绑定稳定启动器，可在任意项目使用。它不依赖当前仓库、`CLAUDE.md`、`uv run`、Claude 的 `rmg` PATH 或 MCP。只有手工复制的源码版脚本需要 `rmg` 已在当前 PATH；若入口缺失或绑定环境已移除，使用有效工具环境执行 `rmg setup` 修复，不要猜其他解释器或自动改用 MCP。升级前停止添加新任务，核对活动会话；不得在任务中途静默升级。
 
 脚本在其子进程中关闭 MSYS 参数路径转换，并使用 UTF-8 标准输入输出，保留远端 POSIX 路径及非 ASCII 文本。Windows 本地文件使用原生路径（例如 `C:/work/package.tar.gz`）或项目相对路径，不使用 `/c/...` 自动转换；远端文件仍使用真实的 `/...`。WSL/Linux 使用其自身的本地路径和工具环境。
 
@@ -27,6 +27,8 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target list
 - 没有目标、认证失败、首次 SSH 信任、Telnet 登录、状态目录问题：读 [目标与连接](references/targets.md)。
 - 独立命令、上传下载、操作记录与业务验证：读 [执行与传输](references/execution.md)。
 - Shell、测试前台、连续输入、提示符等待、人工接管：读 [交互会话](references/interactive.md)。
+- 需要保留 cd/export 并读取逐条退出码：读 [同一 Shell 命令](references/shell.md)。
+- 连接阶段错误、跳板/代理/菜单登录、配置修复：读 [连接与修复](references/recovery.md)。
 - 长时间构建/部署/测试、断线后查询、重启后的跟踪或取消：读 [持久作业](references/jobs.md)。
 - 多步骤部署、跨对话继续、个人项目配方、开发者查看状态：先读 [个人任务与控制台](references/tasks.md)。
 
@@ -43,3 +45,5 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target list
 6. 返回简洁的目标、产物、实际验证结果和后续可查询 ID。结果未知、日志截断或仅完成部分步骤时，明确说明证据缺口。
 7. `gap=true` 表示早期日志已被淘汰，最新日志仍可继续读取；不要跨缺口拼接成功证据。任务 `succeeded/steps_completed` 表示记录步骤完成，业务通过仍以项目规定的验证命令和输出为准。
 8. 用户想看状态时可调用 `ui` 打开本地网页。访问 URL 含本地访问密钥，不放入项目文件、公开日志或总结。普通终端仍不支持网络断开后恢复原前台。
+9. 失败时读取 `error.details.diagnostic`：`stage`、`business_input`、`evidence`、`recovery_actions`。认证失败只报告并修复引用，不循环尝试同一凭据。`not_sent` 可确定此次业务未派发；`sent/unknown` 先查询原记录。修复配置使用 snapshot + patch 预览和 revision 校验，不根据终端内容猜目标身份或关闭主机校验。
+10. `helper health` 检查存储。日志 `gap/log_incomplete/logs_deleted` 说明证据缺失，不代表业务失败或成功。清理需明确选定已结束作业，先 preview 后按 plan_id apply，保留 ID 去重；不要因空间不足擅自删除其他文件。

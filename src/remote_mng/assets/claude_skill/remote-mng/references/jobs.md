@@ -62,6 +62,7 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json operation list
 按 `error.code`（或任务步骤的 `error.code`）区分恢复路径：
 
 - `helper_not_installed`：工具确认辅助程序缺失、此次作业命令未执行。按上面的授权范围安装并复查后，可以用**相同** task ID、step ID、job ID 和参数继续；这是工具允许的确定拒绝恢复分支。
+- `helper_upgrade_required`：旧 helper 缺少日志配额协议，此次提交在业务执行前被拒绝。按已授权范围重新 `helper install` 后，可保持相同 task/step/job ID 与参数继续。旧作业仍可查询、读取和取消。
 - `job_id_conflict`：该 ID 已对应不同请求。不能把旧作业的结果当成本次成功，也不能接管或取消旧作业。先核对记录；确属新的工作时使用新的步骤与作业 ID，保留冲突记录。
 - `unknown`、超时、断线或响应丢失：只能用原 ID 查询状态和日志，不能反复执行原 `job start` 或 `task invoke`。同一 step 的重复返回可能只是原来的未知记录，并不是新尝试。
 - `job_not_found`：仅表示查询不到记录，不等于未执行；按上文检查目标与存储，不能套用 `helper_not_installed` 的重试规则。
@@ -88,4 +89,20 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json job status TARGET JOB_ID
 - 支持在远端主机与存储仍正常、服务器允许脱离登录会话的进程继续运行时，跨连接和本地管理进程重启查询。
 - 不提供交互式 stdin 或 PTY；需要持续前台输入的程序使用 `session`。不把既有任意进程变成受管作业。
 - 不管理脚本自行脱离进程组的后台程序，不自动重启远端重启后中断的任务，不承诺断电或存储故障时记录完整保留。
-- 原始请求脚本、环境和日志保存在远端用户目录，不自动轮转或清理。避免在请求中写入凭据；按项目要求安排留存与清理，不能以日志空间不足为由擅自删除其他文件。
+- 原始请求脚本、环境和日志保存在远端用户目录。新 helper 每作业 stdout/stderr 分别默认保留最近 16 MiB，目标 `helper_max_log_bytes` 可调整；启动前默认要求 8 MiB 可用空间，由 `helper_min_free_bytes` 配置。限额针对输出保留，不能保证业务数据或所有作业总量不填满磁盘。避免在请求中写入凭据。
+
+## 存储与清理
+
+```sh
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json helper health TARGET
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json helper cleanup TARGET JOB_ID
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json helper cleanup TARGET JOB_ID --apply --plan-id PLAN_ID
+```
+
+先读取 preview 中的 `jobs/eligible/plan_id`。只有用户授权清理这些日志时，才按同一范围与计划 apply；活动或未知作业不可清理，预览变化则重新核对。清理保留作业 ID、请求摘要、状态与退出证据，不能用同一 ID 重跑。删除不可恢复，但旧游标返回 `logs_deleted/gap`，不会把缺失日志伪装成完整输出。
+
+## 直接脚本已退出，但输出仍被后台程序持有
+
+`script_exit_code`、`script_finished_at` 是直接脚本已退出的独立证据。若同时返回 `state=running`、`logs_draining=true`、`phase=waiting_for_output_close`，表示后台子进程仍持有输出或采集尚未结束，不能推断直接脚本仍在执行。不要重新提交部署、不要换新 job ID 重跑、不要为了完成状态强杀后台程序或关闭管道；继续查询原 job ID，结合已有业务状态判断下一步。
+
+未来明确要独立启动后台服务的脚本，应使用项目确认的服务管理器或显式重定向 stdin/stdout/stderr 到预定位置。只修改后续启动流程，不对已经执行的启动动作补发一次。整体退出记录仍需等输出采集完成；此期间日志清理必须拒绝。脚本退出码和最终作业退出码都不替代业务验收。

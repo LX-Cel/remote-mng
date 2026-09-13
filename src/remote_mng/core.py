@@ -25,7 +25,7 @@ class Session:
         self.id = id
         self.terminal = terminal
         self.redactor = redactor
-        self.token = secrets.token_urlsafe(32)
+        self.token = "rmg_" + secrets.token_urlsafe(32)
         self.lock = asyncio.Lock()
         self.changed = asyncio.Event()
         self.pump = None
@@ -48,6 +48,8 @@ class Manager:
         from .taskbook import TaskBook
         self.taskbook = TaskBook(self)
         self.step_tasks = {}
+        from .session_shell import ShellCommands
+        self.shell_commands = ShellCommands(self)
 
     def launch(self, coro):
         task = asyncio.create_task(coro)
@@ -60,6 +62,7 @@ class Manager:
             "target.list": self.target_list, "target.put": self.config.put,
             "target.remove": self.config.remove, "target.check": self.target_check,
             "target.inspect": self.target_inspect,
+            "target.snapshot": self.config.snapshot, "target.patch": self.config.patch,
             "task.create": self.taskbook.create, "task.list": self.taskbook.list,
             "task.get": self.taskbook.get, "task.invoke": self.taskbook.invoke,
             "task.seal": self.taskbook.seal, "task.cancel": self.taskbook.cancel,
@@ -73,10 +76,14 @@ class Manager:
             "session.close": self.session_close, "session.resize": self.session_resize,
             "session.leave": self.session_leave,
             "session.step": self.session_step, "session.step.get": self.session_step_get,
+            "session.shell.enable": self.session_shell_enable,
+            "session.exec": self.session_exec, "session.exec.get": self.session_exec_get,
+            "session.interrupt": self.session_interrupt,
             "transfer.start": self.transfer_start,
             "job.install": self.job_install, "job.start": self.job_start,
             "job.status": self.job_status, "job.list": self.job_list,
             "job.logs": self.job_logs, "job.cancel": self.job_cancel,
+            "job.health": self.job_health, "job.cleanup": self.job_cleanup,
         }
         if method not in methods:
             raise RemoteError("unknown_method", f"Unknown method: {method}")
@@ -101,19 +108,28 @@ class Manager:
             conn = await transports.connect_ssh(cfg)
             try:
                 key = conn.get_server_host_key()
+                diagnostic = getattr(conn, "_rmg_diagnostic", None)
+                if cfg.get("login_steps") or cfg.get("login_flow"):
+                    terminal = await transports.open_terminal(cfg)
+                    try:
+                        diagnostic = getattr(terminal, "diagnostic", diagnostic)
+                    finally:
+                        await terminal.close()
                 return {"target": target, "connected": True, "protocol": "ssh",
                         "fingerprint": key.get_fingerprint(), "shell": cfg["shell"],
+                        "diagnostic": diagnostic,
                         "helper_installed": "not_checked"}
             finally:
-                conn.close()
-                await conn.wait_closed()
+                await transports._close_ssh(conn)
         terminal = await transports.open_terminal(cfg)
         await terminal.close()
         return {"target": target, "connected": True, "protocol": "telnet", "shell": cfg["shell"],
+                "diagnostic": getattr(terminal, "diagnostic", None),
                 "helper_installed": "not_checked"}
 
     def operation_list(self):
-        return [r for r in self.store.list() if r["kind"] in {"exec", "transfer", "job_reference", "session_step"}]
+        return [r for r in self.store.list() if r["kind"] in
+                {"exec", "transfer", "job_reference", "session_step", "session_exec"}]
 
     def new_operation(self, kind, target, **meta):
         id = uuid.uuid4().hex
@@ -126,7 +142,7 @@ class Manager:
             for stream in ("stdout", "stderr"):
                 if stream in result:
                     self.store.append(id, redactor.clean(str(result[stream])), stream)
-            summary = {k: v for k, v in result.items() if k not in ("stdout", "stderr")}
+            summary = redactor.structured({k: v for k, v in result.items() if k not in ("stdout", "stderr")})
             if result.get("outcome") == "unknown" or ("exit_code" in result and result["exit_code"] is None):
                 state = "unknown"
             else:
@@ -136,8 +152,10 @@ class Manager:
             self.store.update(id, state="unknown", reason="local_observation_stopped", finished_at=time.time())
             raise
         except Exception as exc:
-            err = exc.as_dict() if isinstance(exc, RemoteError) else {"code": "execution_error", "message": redactor.clean(str(exc))}
+            err = redactor.structured(exc.as_dict()) if isinstance(exc, RemoteError) else {"code": "execution_error", "message": redactor.clean(str(exc))}
             uncertain = err["code"] in ("timeout", "connection_lost", "connection_error") or err.get("details", {}).get("outcome") == "unknown"
+            if err.get("details", {}).get("diagnostic", {}).get("business_input") == "not_sent":
+                uncertain = False
             self.store.update(id, state="unknown" if uncertain else "failed", error=err, finished_at=time.time())
 
     @staticmethod
@@ -167,11 +185,13 @@ class Manager:
                     lambda: transports.run_command(cfg, wrapped, timeout=timeout), redactor))
         return record
 
-    async def transfer_start(self, target, local_path, remote_path, direction="upload", protocol="sftp", overwrite=False, recursive=False):
+    async def transfer_start(self, target, local_path, remote_path, direction="upload", protocol="sftp", overwrite=False, recursive=False,
+                             concurrency=1, conflict=None, resume=False):
         cfg = self.config.target(target, "transfer")
         record = self.new_operation("transfer", target, local_path=local_path, remote_path=remote_path, direction=direction)
         self.launch(self.execute_operation(record, lambda: transports.transfer(
             cfg, local_path, remote_path, direction=direction, protocol=protocol, overwrite=overwrite, recursive=recursive,
+            concurrency=concurrency, conflict=conflict, resume=resume,
             progress=lambda value: self.store.update(record["id"], progress=value)),
             Redactor(target_secrets(cfg))))
         return record
@@ -232,6 +252,7 @@ class Manager:
                 self.store.append(session.id, tail)
             if self.store.get(session.id)["state"] == "open":
                 self.store.update(session.id, state="disconnected")
+            self.shell_commands.invalidate(session, "connection_lost")
             self.sessions.pop(session.id, None)
             session.changed.set()
 
@@ -272,8 +293,10 @@ class Manager:
         if not isinstance(newline, bool) or not isinstance(sensitive, bool):
             raise RemoteError("invalid_input", "newline and sensitive must be booleans")
 
-    async def _session_send(self, session, data, newline, sensitive):
+    async def _session_send(self, session, data, newline, sensitive, shell_owned=False):
         """Send under the session lock; invalidate observations before input."""
+        if not shell_owned:
+            self.shell_commands.before_input(session)
         if sensitive:
             session.redactor.add(data)
         record = self.store.get(session.id)
@@ -283,6 +306,18 @@ class Manager:
                           last_input_cursor=before)
         await session.terminal.write(data + ("\n" if newline else ""))
         return before
+
+    async def session_shell_enable(self, id, control_token, confirm_posix=False, timeout=10):
+        return await self.shell_commands.enable(id, control_token, confirm_posix, timeout)
+
+    async def session_exec(self, id, command, control_token, request_id, timeout=30, sensitive=False):
+        return await self.shell_commands.execute(id, command, control_token, request_id, timeout, sensitive)
+
+    def session_exec_get(self, id, request_id):
+        return self.shell_commands.get(id, request_id)
+
+    async def session_interrupt(self, id, control_token):
+        return await self.shell_commands.interrupt(id, control_token)
 
     def _observe_outer_prompt(self, id, window, cursor):
         """Recognize an explicitly configured outer prompt in fresh output.
@@ -493,7 +528,7 @@ class Manager:
             self.live_session(id)
             if session.token and not force:
                 raise RemoteError("session_busy", "Another controller owns this session; explicit takeover required")
-            session.token = secrets.token_urlsafe(32)
+            session.token = "rmg_" + secrets.token_urlsafe(32)
             self.store.update(id, control_changed_at=time.time())
             return {"id": id, "control_token": session.token, "cursor": self.store.size(id)}
 
@@ -509,6 +544,13 @@ class Manager:
     async def session_close(self, id, control_token):
         session = self.sessions.get(id)
         if not session:
+            record = self.session_get(id)
+            if record.get("state") in {"closed", "disconnected"}:
+                # No live terminal is affected. Preserve the disconnect evidence
+                # and acknowledge that the requested connection is already gone.
+                return {"id": id, "state": "closed", "written": False,
+                        "outcome": "already_disconnected", "observed_state": record["state"],
+                        "remote_process_state": "unknown"}
             raise RemoteError("session_disconnected", "No live session")
         async with session.lock:
             session.authorize(control_token)
@@ -582,6 +624,15 @@ class Manager:
     async def job_install(self, target):
         return await self.jobs(target).install()
 
+    async def job_health(self, target):
+        result = {"target": target, **await self.jobs(target).health(), "checked_at": time.time()}
+        self.store.put({"id": "storage-" + hashlib.sha256(target.encode()).hexdigest()[:24],
+                        "kind": "storage_health", **result})
+        return result
+
+    async def job_cleanup(self, target, job_ids, apply=False, expected_plan=None):
+        return {"target": target, **await self.jobs(target).cleanup(job_ids, apply, expected_plan)}
+
     async def job_start(self, target, command, cwd=None, env=None, job_id=None):
         client = self.jobs(target)
         job_id = job_id or uuid.uuid4().hex
@@ -625,6 +676,9 @@ class Manager:
             return result
         start = max(0, offset - padding)
         first = await client.logs(job_id, stream=stream, offset=start, limit=min(262144, limit + 2 * padding))
+        start = first["offset"]
+        requested = offset
+        offset = max(offset, start)
         data = base64.b64decode(first["data_base64"])
         snapshot = first["snapshot_size"]
         if offset > snapshot:
@@ -634,11 +688,16 @@ class Manager:
         while start + len(data) < wanted:
             next_part = await client.logs(job_id, stream=stream, offset=start + len(data),
                                           limit=min(262144, wanted - start - len(data)))
+            if next_part["offset"] != start + len(data):
+                raise RemoteError("log_changed_during_read", "Log rotated during redaction; retry the same cursor")
             more = base64.b64decode(next_part["data_base64"])
             if not more:
                 break
             data += more
         safe = bytearray(data)
+        if start > 0 and start == first.get("base_offset", -1):
+            # A credential may begin in evicted bytes; conceal the uncertain prefix.
+            safe[:min(padding, len(safe))] = b"*" * min(padding, len(safe))
         for secret in known:
             at = data.find(secret)
             while at >= 0:
@@ -656,7 +715,8 @@ class Manager:
         view = bytes(safe[offset - start:end - start])
         return {**first, "data": view.decode(encoding, errors="replace"),
                 "data_base64": base64.b64encode(view).decode(), "offset": offset, "next_offset": end,
-                "eof": end >= snapshot, "snapshot_size": snapshot, "redacted": True}
+                "eof": end >= snapshot, "snapshot_size": snapshot, "redacted": True,
+                "gap": first.get("gap", False) or offset > requested}
 
     async def job_cancel(self, target, job_id):
         return await self.jobs(target).cancel(job_id)

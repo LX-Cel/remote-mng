@@ -14,6 +14,8 @@ Windows 原生、WSL 和 Linux 分别使用其自身的用户目录、SSH 配置
 
 `target list` 等常规调用可按需启动管理进程，`server status` 本身不启动它。若宿主限制独立子进程，出现 `daemon_start_failed`，让开发者在独立终端使用其已安装的 `rmg server start` 预启动，再继续通过本技能包装脚本调用。不要为普通远端错误反复重启管理进程，重启会断开共享的交互会话；受管作业仍保留远端记录。
 
+**如果 `error.details.reason = process_breakaway_not_permitted`，立即停止本轮启动尝试。** 这是 Windows 宿主的进程限制，不是远端连接故障。不得循环 `server start`，不得换成后台 `server run`，也不得尝试 `cmd /c start`、计划任务、WMI 或关闭沙箱来绕过限制。报告本地管理进程需要从宿主外的独立安装/启动入口预启动；在用户或已授权的独立安装流程完成此前置步骤后，用同一 `RMG_HOME` 的 `server status` 验证，再继续任务。预启动尚未完成时，远端业务未派发；保留现状，不捏造业务失败，也不要把自己的排障命令当作任务完成。
+
 ## 首次没有可用目标
 
 先取得会改变执行位置或授权边界的必要信息：目标别名、实际主机与端口、SSH/Telnet 协议、用户名或登录提示、认证引用、本地与远端路径、是否进入 POSIX shell。需要传包时还要确认 SSH 文件传输入口；需要部署时取得已有部署命令、启动方式和验收判据。
@@ -55,7 +57,7 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target add TARGET --file ./remote-
 - `allowed_actions`：可选动作范围，使用 `check`、`exec`、`session`、`transfer`、`job`；不提供时不额外限制，空列表拒绝这些目标动作。遇到拒绝先核对现有授权，不以扩大配置绕过用户意图。
 - `helper_dir`：持久作业辅助程序和记录的远端目录，须为绝对 POSIX 路径或以 `~/` 开头。
 
-SSH 默认假设 `shell: "posix"`。实际远端不是 POSIX shell 时明确设为 `unknown`，使用适合该设备的交互入口。
+无菜单配置的 SSH 默认假设 `shell: "posix"`；配置 login_steps/login_flow 时默认 unknown。实际远端不是 POSIX shell 时明确设为 `unknown`，使用适合该设备的交互入口。逐条 `session exec` 仍需显式确认当前 Shell。
 
 首次信任失败或主机密钥变化时，先通过用户、服务器控制台或管理员提供的独立渠道核验指纹，再使工具读取经核验的 `known_hosts`。不要自动关闭主机身份检查，也不要仅凭 `ssh-keyscan` 返回的密钥就接受身份。
 

@@ -81,6 +81,29 @@ def build_parser() -> argparse.ArgumentParser:
     groups = parser.add_subparsers(dest="group", required=True)
 
     _sub(groups, "schema", "Describe available CLI commands and machine-result conventions without connecting")
+    _sub(groups, "runtime-info", "Read installed runtime, resources and protocol compatibility without starting services")
+    setup = _sub(groups, "setup", "Install the Claude Skill and verify this installation")
+    setup.add_argument("--claude-dir")
+    setup.add_argument("--start-daemon", action="store_true", help="Start the local manager during installation outside an Agent sandbox")
+    setup.add_argument("--bind-command-json", help=argparse.SUPPRESS)
+    distribution = _sub(groups, "distribution", "Manage versioned, verified personal installations")
+    distributions = distribution.add_subparsers(dest="action", required=True)
+    for action in ("status", "install", "rollback", "fetch"):
+        item = _sub(distributions, action, "Inspect, install or roll back a verified distribution")
+        item.add_argument("--install-dir")
+        if action in {"install", "rollback"}:
+            item.add_argument("--claude-dir")
+        if action == "install":
+            item.add_argument("archive")
+            item.add_argument("--sha256", required=True)
+        if action == "rollback":
+            item.add_argument("--to-version")
+        if action == "fetch":
+            item.add_argument("--repository", required=True)
+            item.add_argument("--tag", required=True)
+            item.add_argument("--asset", required=True)
+            item.add_argument("--sha256", required=True)
+            item.add_argument("--destination", required=True)
     doctor = _sub(groups, "doctor", "Inspect local setup and optionally probe one target without deploying or installing")
     doctor.add_argument("target", nargs="?")
     doctor.add_argument("--directory", help="Existing remote directory to check for write access")
@@ -133,6 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
     target = _sub(groups, "target", "Manage explicit remote targets")
     targets = target.add_subparsers(dest="action", required=True)
     _sub(targets, "list", "List configured targets (credential values are not returned)")
+    snapshot = _sub(targets, "snapshot", "Read target configuration with its revision before a repair")
+    snapshot.add_argument("target")
+    patch = _sub(targets, "patch", "Preview or apply a validated configuration repair with revision checking")
+    patch.add_argument("target")
+    patch.add_argument("--file", required=True, help="JSON merge patch; '-' reads stdin")
+    patch.add_argument("--revision", required=True)
+    patch.add_argument("--apply", action="store_true", help="Apply the previewed repair and keep a backup")
     add = _sub(targets, "add", "Create or replace a target configuration")
     add.add_argument("name")
     add.add_argument("--file", help="JSON configuration file; '-' reads standard input")
@@ -170,6 +200,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     session = _sub(groups, "session", "Share a persistent SSH/Telnet interactive terminal")
     sessions = session.add_subparsers(dest="action", required=True)
+    shell = _sub(sessions, "shell-enable", "Enable framed commands only in a confirmed POSIX shell")
+    shell.add_argument("id")
+    shell.add_argument("--confirm-posix", action="store_true", required=True)
+    shell.add_argument("--timeout", type=float, default=10)
+    _token(shell)
+    shell_exec = _sub(sessions, "exec", "Run in the same confirmed shell; reuse the request ID after timeout")
+    shell_exec.add_argument("id")
+    shell_exec.add_argument("command", nargs="?")
+    shell_exec.add_argument("--script")
+    shell_exec.add_argument("--request-id", required=True)
+    shell_exec.add_argument("--timeout", type=float, default=30)
+    shell_exec.add_argument("--sensitive", action="store_true")
+    _token(shell_exec)
+    shell_get = _sub(sessions, "exec-get", "Read a framed command's existing evidence without sending input")
+    shell_get.add_argument("id")
+    shell_get.add_argument("request_id")
+    interrupt = _sub(sessions, "interrupt", "Explicitly interrupt a pending shell command; result may remain unknown")
+    interrupt.add_argument("id")
+    _token(interrupt)
     opened = _sub(sessions, "open", "Open a session and obtain its input-control token")
     opened.add_argument("target")
     opened.add_argument("--command", help="Optional program to start in the remote terminal")
@@ -238,12 +287,22 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Explicit transfer protocol; scp selects legacy SCP")
         item.add_argument("--overwrite", action="store_true")
         item.add_argument("--recursive", action="store_true")
+        item.add_argument("--concurrency", type=int, default=1)
+        item.add_argument("--conflict", choices=("error", "overwrite", "skip-identical"))
+        item.add_argument("--resume", action="store_true", help="Verify complete files by digest and continue remaining files; never append unchecked partial bytes")
         _wait_option(item)
 
     helper = _sub(groups, "helper", "Install the small remote durable-job helper")
     helpers = helper.add_subparsers(dest="action", required=True)
     install = _sub(helpers, "install", "Install the helper on the selected target")
     install.add_argument("target")
+    health = _sub(helpers, "health", "Query helper protocol, free storage and retained job usage")
+    health.add_argument("target")
+    cleanup = _sub(helpers, "cleanup", "Preview cleanup of selected finished job logs; keep IDs and results")
+    cleanup.add_argument("target")
+    cleanup.add_argument("job_ids", nargs="+")
+    cleanup.add_argument("--apply", action="store_true")
+    cleanup.add_argument("--plan-id", help="Required for apply; returned by the cleanup preview")
 
     job = _sub(groups, "job", "Run and inspect durable jobs after disconnects or local restarts")
     jobs = job.add_subparsers(dest="action", required=True)
@@ -376,6 +435,24 @@ async def dispatch(args: argparse.Namespace) -> Any:
     """Dispatch one CLI invocation, retaining identifiers and output evidence."""
     if args.group == "schema":
         return command_schema()
+    if args.group == "runtime-info":
+        from .runtime import runtime_manifest
+        return runtime_manifest()
+    if args.group == "setup":
+        from .distribution import setup
+        binding = json.loads(args.bind_command_json) if args.bind_command_json else None
+        return await setup(args.home, args.claude_dir, binding=binding, start_daemon=args.start_daemon)
+    if args.group == "distribution":
+        from .distribution import install_artifact, rollback_install, installation_status, download_release
+        if args.action == "status":
+            return installation_status(args.install_dir)
+        if args.action == "install":
+            return await install_artifact(args.archive, args.sha256, install_dir=args.install_dir,
+                                          home=args.home, claude_dir=args.claude_dir)
+        if args.action == "rollback":
+            return await rollback_install(install_dir=args.install_dir, home=args.home,
+                                          claude_dir=args.claude_dir, version=args.to_version)
+        return download_release(args.repository, args.tag, args.asset, args.sha256, args.destination)
     if args.group == "project":
         from .project import inspect_project
         return inspect_project(args.file)
@@ -438,6 +515,11 @@ async def dispatch(args: argparse.Namespace) -> Any:
     if args.group == "server":
         return await client.call("server.stop" if args.action == "stop" else "server.status", {})
     if args.group == "target":
+        if args.action == "snapshot":
+            return await client.call("target.snapshot", {"name": args.target})
+        if args.action == "patch":
+            return await client.call("target.patch", {"name": args.target, "patch": _read_json(args.file),
+                "expected_revision": args.revision, "dry_run": not args.apply})
         if args.action == "list":
             return await client.call("target.list", {})
         if args.action == "add":
@@ -475,6 +557,17 @@ async def dispatch(args: argparse.Namespace) -> Any:
             params.update(stream=args.stream, offset=args.offset, limit=args.limit)
         return await client.call("operation." + args.action, params)
     if args.group == "session":
+        if args.action == "shell-enable":
+            return await client.call("session.shell.enable", {"id": args.id, "control_token": _control_token(args),
+                "confirm_posix": args.confirm_posix, "timeout": args.timeout})
+        if args.action == "exec":
+            return await client.call("session.exec", {"id": args.id, "command": _command(args),
+                "control_token": _control_token(args), "request_id": args.request_id,
+                "timeout": args.timeout, "sensitive": args.sensitive})
+        if args.action == "exec-get":
+            return await client.call("session.exec.get", {"id": args.id, "request_id": args.request_id})
+        if args.action == "interrupt":
+            return await client.call("session.interrupt", {"id": args.id, "control_token": _control_token(args)})
         if args.action == "list":
             return await client.call("session.list", {})
         if args.action == "open":
@@ -525,11 +618,19 @@ async def dispatch(args: argparse.Namespace) -> Any:
             "local_path": str(Path(args.source if upload else args.destination).expanduser().resolve()),
             "remote_path": args.destination if upload else args.source,
             "protocol": args.protocol, "overwrite": args.overwrite, "recursive": args.recursive,
+            **({"concurrency": args.concurrency} if args.concurrency != 1 else {}),
+            **({"conflict": args.conflict} if args.conflict is not None else {}),
+            **({"resume": True} if args.resume else {}),
         })
         if _state(result) in TERMINAL_STATES:
             return result
         return await _wait_result(client, result, method="operation.get", params={"id": result["id"]}, timeout=args.wait_timeout) if args.wait else result
     if args.group == "helper":
+        if args.action == "health":
+            return await client.call("job.health", {"target": args.target})
+        if args.action == "cleanup":
+            return await client.call("job.cleanup", {"target": args.target, "job_ids": args.job_ids,
+                "apply": args.apply, "expected_plan": args.plan_id})
         return await client.call("job.install", {"target": args.target})
     if args.group == "job":
         params = {"target": args.target}

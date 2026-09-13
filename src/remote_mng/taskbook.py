@@ -19,6 +19,7 @@ from .redact import Redactor, target_secrets
 ALLOWED_METHODS = frozenset({
     "exec.start", "transfer.start", "job.start", "job.install", "job.status",
     "session.open", "session.step", "session.leave", "session.close", "target.check", "target.inspect",
+    "session.shell.enable", "session.exec", "session.interrupt", "job.health",
 })
 _TARGET_METHODS = {method for method in ALLOWED_METHODS if not method.startswith("session.")}
 _TARGET_METHODS.add("session.open")
@@ -30,6 +31,8 @@ _DEFINITE_REJECTIONS = frozenset({
     "session_busy", "profile_exit_missing", "task_target_mismatch", "session_limit",
     "job_id_conflict", "request_conflict", "helper_not_installed", "credential_missing",
     "host_key_untrusted", "authentication_failed", "target_not_found", "profile_not_found",
+    "shell_confirmation_required", "shell_not_ready", "shell_command_pending", "insufficient_space",
+    "helper_upgrade_required",
 })
 
 
@@ -295,6 +298,10 @@ class TaskBook:
         if not isinstance(result, dict):
             return "unknown"
         state = result.get("state")
+        if method == "session.shell.enable":
+            return "observed" if result.get("shell", {}).get("state") == "ready" else "needs_attention"
+        if method == "session.interrupt":
+            return "observed" if result.get("outcome") == "interrupt_sent" else "unknown"
         if method == "session.step" and state == "succeeded":
             return "observed" if result.get("observation", {}).get("matched") else "unknown"
         if state in _TERMINAL | {"unknown", "running", "pending", "cancel_requested", "needs_attention"}:
@@ -333,6 +340,8 @@ class TaskBook:
         if method.startswith("session."):
             id = result.get("session_id") or params.get("id") or result.get("id")
             resource = {"kind": "session", "id": id, "target": target} if id else None
+            if resource and method == "session.exec":
+                resource["operation_id"] = result.get("id") or self.manager.shell_commands.record_id(id, params.get("request_id"))
             if resource and method == "session.step":
                 if result.get("kind") == "session_step" and result.get("id"):
                     resource["operation_id"] = result["id"]
@@ -366,7 +375,7 @@ class TaskBook:
                 raise RemoteError("task_target_mismatch", "The session must belong to this task target")
         try:
             # Authorization can rotate after a session claim without changing intent.
-            excluded = {"control_token", "timeout"} if method == "session.step" else {"control_token"}
+            excluded = {"control_token", "timeout"} if method in {"session.step", "session.exec"} else {"control_token"}
             fingerprint = hashlib.sha256(_json([method, {key: value for key, value in params.items()
                                                         if key not in excluded}]).encode()).hexdigest()
         except (TypeError, ValueError) as exc:
@@ -379,13 +388,13 @@ class TaskBook:
             self._observe_local(task_id)
             old = next(step for step in self._steps(task_id) if step["id"] == request_id)
             if (method == "job.start" and old["state"] == "failed" and old.get("_definite_failure")
-                    and old.get("error", {}).get("code") == "helper_not_installed"):
+                    and old.get("error", {}).get("code") in {"helper_not_installed", "helper_upgrade_required"}):
                 # The explicit helper existence preflight proves that no start
                 # request reached the helper. Only this rejection can be retried
                 # after repair; legacy/generic unknown failures never qualify.
                 retry_previous = old
             else:
-                if method == "session.step" and old["state"] == "unknown":
+                if method in {"session.step", "session.exec"} and old["state"] == "unknown":
                     old = await self._reobserve_session(task_id, old, params)
                 response = {"task_id": task_id, "step_id": request_id, "duplicate": True,
                             "state": old["state"], "result": old.get("result"), "resource": old.get("resource"),
@@ -414,7 +423,7 @@ class TaskBook:
                 "error": retry_previous["error"], "observed_at": retry_previous.get("observed_at"),
                 "attempt": retry_previous.get("attempt_count", 1),
             }
-            step.update(last_rejection=last_rejection, retry_reason="helper_not_installed")
+            step.update(last_rejection=last_rejection, retry_reason=retry_previous["error"]["code"])
         resource = self._resource(method, {**params, "target": task["target"]})
         if resource:
             step["resource"] = resource
@@ -424,10 +433,11 @@ class TaskBook:
         except BaseException as exc:
             error = self._error(exc)
             code = error["code"]
-            definite = _definite_rejection(code)
+            definite = (_definite_rejection(code) or
+                        error.get("details", {}).get("diagnostic", {}).get("business_input") == "not_sent")
             step.update(state="failed" if definite else "unknown", error=self._safe(error, redactor),
                         observed_at=time.time(), _definite_failure=definite)
-            if method == "job.start" and code == "helper_not_installed" and definite:
+            if method == "job.start" and code in {"helper_not_installed", "helper_upgrade_required"} and definite:
                 step["last_rejection"] = {"error": self._safe(error, redactor),
                                           "observed_at": step["observed_at"], "attempt": step["attempt_count"]}
             details = error.get("details", {})
@@ -441,7 +451,7 @@ class TaskBook:
                               {**self._safe(details, redactor), "task_id": task_id, "step_id": request_id,
                                "state": step["state"], "resource": step.get("resource"), "attempt_count": step["attempt_count"],
                                "advice": "Install the helper, then invoke this same task step with unchanged parameters; no job was started"
-                                         if method == "job.start" and code == "helper_not_installed" and definite else
+                                         if method == "job.start" and code in {"helper_not_installed", "helper_upgrade_required"} and definite else
                                          "Inspect this task and resource; do not resubmit uncertain work"}) from exc
         redactor.secrets.update(self._redactor(task["target"], result if isinstance(result, dict) else {}).secrets)
         step.update(state=self._result_state(method, result), result=self._safe(result, redactor),
@@ -456,7 +466,7 @@ class TaskBook:
         self._save_step(task_id, step)
         return {"task_id": task_id, "step_id": request_id, "duplicate": False, "state": step["state"], "result": result,
                 "attempt_count": step["attempt_count"],
-                **({"retry_reason": "helper_not_installed", "last_rejection": step["last_rejection"]} if retry_previous else {})}
+                **({"retry_reason": step["retry_reason"], "last_rejection": step["last_rejection"]} if retry_previous else {})}
 
     async def _reobserve_session(self, task_id, step, params):
         """Continue the core's existing observation, never create a second send intent."""
@@ -468,16 +478,17 @@ class TaskBook:
             record = self.manager.store.get(operation_id)
         except RemoteError:
             return step
-        if (record.get("kind") != "session_step" or record.get("session_id") != params.get("id")
+        kind = "session_exec" if step["method"] == "session.exec" else "session_step"
+        if (record.get("kind") != kind or record.get("session_id") != params.get("id")
                 or record.get("request_id") != params.get("request_id")):
             return step
         redactor = self._redactor(resource["target"], params)
         try:
-            result = await self.manager.dispatch("session.step", params)
+            result = await self.manager.dispatch(step["method"], params)
         except Exception as exc:
             step.update(error=self._safe(self._error(exc), redactor), observed_at=time.time())
         else:
-            step.update(state=self._result_state("session.step", result), result=self._safe(result, redactor),
+            step.update(state=self._result_state(step["method"], result), result=self._safe(result, redactor),
                         observed_at=time.time())
             step.pop("error", None)
             if step["state"] not in {"unknown", "needs_attention"}:

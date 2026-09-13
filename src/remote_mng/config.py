@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -32,8 +34,13 @@ class Target(BaseModel):
     rows: int = Field(default=24, ge=1, le=1000)
     transfer_timeout: float = Field(default=3600, gt=0, le=86400)
     login_steps: list[dict] = Field(default_factory=list)
+    login_flow: dict | None = None
+    jump: dict | None = None
+    proxy: dict | None = None
     transfer: dict | None = None
     helper_dir: str = "~/.local/share/remote-mng"
+    helper_max_log_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=1024 * 1024 * 1024)
+    helper_min_free_bytes: int = Field(default=8 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024 * 1024)
     allowed_actions: list[str] | None = None
 
     @model_validator(mode="after")
@@ -44,7 +51,16 @@ class Target(BaseModel):
         except LookupError as exc:
             raise ValueError("Unknown terminal encoding") from exc
         if self.shell is None:
-            self.shell = "posix" if self.protocol == "ssh" else "unknown"
+            self.shell = "posix" if self.protocol == "ssh" and not (self.login_steps or self.login_flow) else "unknown"
+        for reference in (self.password_env, self.passphrase_env):
+            if reference is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", reference):
+                raise ValueError("Credentials must use environment variable names")
+        from .connection_routes import validate_routes, validate_login
+        try:
+            validate_routes(self.model_dump(exclude_none=True))
+            validate_login(self.login_steps, self.login_flow)
+        except Exception as exc:
+            raise ValueError("Invalid connection route or login flow") from exc
         for step in self.login_steps:
             if set(step) - {"expect", "send", "send_env", "newline", "timeout"}:
                 raise ValueError("Unsupported login step field")
@@ -59,7 +75,9 @@ class Target(BaseModel):
             if "transfer" in self.transfer:
                 raise ValueError("Nested transfer configuration is not supported")
             base = self.model_dump(exclude_none=True)
-            base.pop("transfer", None)
+            independent = self.protocol == "telnet" or self.login_steps or self.login_flow
+            for key in (("transfer", "login_steps", "login_flow", "jump", "proxy", "port") if independent else ("transfer", "login_steps", "login_flow")):
+                base.pop(key, None)
             base.update(self.transfer)
             base["protocol"] = "ssh"
             Target.model_validate(base)
@@ -124,6 +142,57 @@ class Config:
             del settings["targets"][name]
             atomic_json(self.path, settings)
         return {"name": name, "removed": True}
+
+    @staticmethod
+    def _revision(settings):
+        return hashlib.sha256(json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+    def snapshot(self, name):
+        with self.lock:
+            settings = self.read()
+            if name not in settings.get("targets", {}):
+                raise RemoteError("target_not_found", f"Unknown target: {name}")
+            return {"name": name, "revision": self._revision(settings), "config": settings["targets"][name]}
+
+    def patch(self, name, patch, expected_revision, dry_run=True):
+        """Validate a JSON merge patch, then optionally apply against an exact revision."""
+        if not isinstance(patch, dict) or not isinstance(expected_revision, str) or not expected_revision:
+            raise RemoteError("invalid_argument", "A patch object and the reviewed configuration revision are required")
+        def merge(before, update):
+            result = dict(before)
+            for key, value in update.items():
+                if value is None:
+                    result.pop(key, None)
+                elif isinstance(value, dict):
+                    result[key] = merge(result.get(key, {}) if isinstance(result.get(key), dict) else {}, value)
+                else:
+                    result[key] = value
+            return result
+        with self.lock:
+            settings = self.read()
+            revision = self._revision(settings)
+            if revision != expected_revision:
+                raise RemoteError("config_conflict", "Configuration changed; inspect a fresh snapshot before applying a patch", {"revision": revision})
+            before = settings.get("targets", {}).get(name)
+            if before is None:
+                raise RemoteError("target_not_found", f"Unknown target: {name}")
+            try:
+                after = Target.model_validate(merge(before, patch)).model_dump(exclude_none=True)
+            except (ValueError, TypeError, re.error) as exc:
+                raise RemoteError("invalid_target", "Patch is invalid; use documented fields and credential references") from exc
+            after["port"] = after.get("port") or (22 if after["protocol"] == "ssh" else 23)
+            diff = [{"field": key, "before": before.get(key), "after": after.get(key)}
+                    for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]
+            result = {"name": name, "revision": revision, "dry_run": dry_run, "diff": diff, "config": after}
+            if not dry_run and diff:
+                backup_dir = self.home / "config-backups"
+                backup_dir.mkdir(mode=0o700, exist_ok=True)
+                backup = backup_dir / (revision[:16] + "-" + uuid.uuid4().hex[:8] + ".json")
+                atomic_json(backup, settings)
+                settings["targets"][name] = after
+                atomic_json(self.path, settings)
+                result.update({"revision": self._revision(settings), "backup_path": str(backup)})
+            return result
 
     def target(self, name, action=None):
         raw = self.read().get("targets", {}).get(name)

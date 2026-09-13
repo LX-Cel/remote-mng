@@ -19,9 +19,10 @@
       <section class="metrics" aria-label="状态概览">
         <div><span>已配置设备</span><strong id="count-targets">—</strong><small>按需检查远端能力</small></div>
         <div><span>进行中的任务</span><strong id="count-running">—</strong><small>最近 100 条任务中的状态</small></div>
-        <div><span>需要关注</span><strong id="count-attention">—</strong><small>最近任务中失败或待确认的状态</small></div>
+        <div><span>需要关注</span><strong id="count-attention">—</strong><small>设备故障与任务待确认状态</small></div>
         <div><span>交互会话</span><strong id="count-sessions">—</strong><small>连接状态不等于任务状态</small></div>
       </section>
+      <section class="panel"><div class="panel-heading"><div><h2>需要关注</h2><p>把故障证据交给 Agent，继续查询或修复。</p></div></div><div id="attention" class="target-grid"></div></section>
       <section class="panel"><div class="panel-heading"><div><h2>设备</h2><p>展示最近一次检查；不会在后台自动探测设备。</p></div></div><div id="targets" class="target-grid"></div></section>
       <div class="work-grid">
         <section class="panel task-panel"><div class="panel-heading"><div><h2>任务</h2><p id="task-list-scope">选择任务，查看步骤与恢复依据。</p></div><button id="refresh-overview" class="quiet">刷新列表</button></div><div id="tasks" class="task-list"></div></section>

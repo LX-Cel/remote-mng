@@ -23,10 +23,11 @@ from filelock import FileLock, Timeout
 
 from . import __version__
 from .errors import RemoteError
+from .runtime import command_prefix
 
 SKILL_NAME = "remote-mng"
 MANIFEST_NAME = ".remote-mng-install.json"
-_FORMAT = 1
+_FORMAT = 2
 _OWNER = "remote-mng.skill-install"
 _REQUIRED = {"SKILL.md", "scripts/rmg.sh"}
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -81,13 +82,17 @@ def _read_manifest(path):
         if _link(metadata) or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 1024 * 1024:
             raise ValueError("Manifest must be a regular file of at most 1 MiB")
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("format") != _FORMAT or data.get("managed_by") != _OWNER:
+        if not isinstance(data, dict) or data.get("format") not in (1, _FORMAT) or data.get("managed_by") != _OWNER:
             raise ValueError("Unknown installation manifest")
         if not isinstance(data.get("package_version"), str) or not data["package_version"]:
             raise ValueError("Invalid package version")
         python = data.get("bound_python")
         if not isinstance(python, str) or "\x00" in python or not (PurePosixPath(python).is_absolute() or PureWindowsPath(python).is_absolute()):
             raise ValueError("Invalid interpreter binding")
+        if data["format"] == 2:
+            _validate_binding(data.get("bound_command"))
+            if data["bound_command"][0] != python:
+                raise ValueError("Inconsistent executable binding")
         files = data.get("files")
         if not isinstance(files, dict) or not _REQUIRED.issubset(files):
             raise ValueError("Manifest lacks required skill files")
@@ -146,7 +151,8 @@ def _inspect(root, skills, directory):
             return result, None
         manifest = _read_manifest(directory / MANIFEST_NAME)
         result.update(bound_python=manifest["bound_python"], binding_exists=Path(manifest["bound_python"]).is_file(),
-                      package_version=manifest["package_version"])
+                      package_version=manifest["package_version"], bound_command=manifest.get("bound_command"),
+                      binding_kind=manifest.get("binding_kind", "python"))
         actual, directories = _inventory(directory)
         expected = set(manifest["files"]) | {MANIFEST_NAME}
         issues = [f"extra: {name}" for name in sorted(actual - expected)]
@@ -205,19 +211,33 @@ def _source_files():
         raise RemoteError("skill_source_invalid", "The installed package has no valid Claude skill resources", {"reason": str(exc)}) from exc
 
 
-def _desired_files():
+def _validate_binding(binding):
+    if (not isinstance(binding, list) or not binding or len(binding) > 16
+            or any(not isinstance(arg, str) or not arg or any(c in arg for c in "\x00\r\n") for arg in binding)
+            or not (PurePosixPath(binding[0]).is_absolute() or PureWindowsPath(binding[0]).is_absolute())):
+        raise ValueError("Binding must be an absolute executable followed by up to 15 arguments")
+    return binding
+
+
+def _desired_files(binding=None):
     payloads = dict(_source_files())
     # Do not resolve(): resolving a Linux virtualenv's python symlink discards
     # the virtualenv and can make the installed remote_mng package unavailable.
-    python = Path(os.path.abspath(sys.executable)).as_posix()
+    try:
+        command = _validate_binding(list(binding) if binding is not None else command_prefix())
+    except ValueError as exc:
+        raise RemoteError("invalid_skill_binding", str(exc)) from exc
+    command[0] = Path(command[0]).as_posix()
+    python = command[0]
     payloads["scripts/rmg.sh"] = ("#!/bin/sh\n"
-        "# Installed by remote-mng; reinstall the skill after moving its Python environment.\n"
+        "# Installed by remote-mng; bound to the selected persistent runtime.\n"
         "export MSYS2_ARG_CONV_EXCL='*'\n"
         "unset PYTHONPATH\n"
         "export PYTHONSAFEPATH=1\n"
         "export PYTHONIOENCODING=utf-8\n"
-        f"exec {shlex.quote(python)} -P -m remote_mng \"$@\"\n").encode("utf-8")
+        f"exec {' '.join(shlex.quote(arg) for arg in command)} \"$@\"\n").encode("utf-8")
     manifest = {"format": _FORMAT, "managed_by": _OWNER, "package_version": __version__, "bound_python": python,
+                "bound_command": command, "binding_kind": "stable" if binding is not None else "frozen" if getattr(sys, "frozen", False) else "python",
                 "files": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(payloads.items())}}
     payloads[MANIFEST_NAME] = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
     return payloads, manifest
@@ -301,9 +321,9 @@ def _stage_cleanup(directory, skills, payloads):
     directory.rmdir()
 
 
-def install_skill(claude_dir=None):
+def install_skill(claude_dir=None, *, binding=None):
     root, skills, directory = _paths(claude_dir)
-    payloads, wanted = _desired_files()
+    payloads, wanted = _desired_files(binding)
     stage = skills / f".remote-mng-stage-{uuid.uuid4().hex}"
     backup = skills / f".remote-mng-backup-{uuid.uuid4().hex}"
     try:

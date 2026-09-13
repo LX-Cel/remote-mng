@@ -10,17 +10,20 @@ import asyncio
 import contextlib
 import hashlib
 import os
-import posixpath
 import re
 import shlex
+import socket
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 import asyncssh
 import telnetlib3
+import regex
 
 from .errors import RemoteError
+from .connection_routes import diagnostic, enrich, proxy_socket
 
 
 COMMAND_OUTPUT_LIMIT = 16 * 1024 * 1024
@@ -42,14 +45,33 @@ def _secret(target: dict[str, Any], name: str) -> str | None:
     return os.environ[key]
 
 
-def _error(exc: Exception, operation: str, *, unknown: bool = False) -> RemoteError:
-    details = {"outcome": "unknown"} if unknown else None
+def _error(exc: Exception, operation: str, *, unknown: bool = False, stage=None, route="target", trace=None) -> RemoteError:
+    stage = stage or ("command" if operation == "Command" else "file_transfer" if operation == "File transfer" else "terminal")
+    if isinstance(exc, asyncssh.HostKeyNotVerifiable):
+        stage = "host_key"
+    elif isinstance(exc, asyncssh.PermissionDenied):
+        stage = "authentication"
+    elif isinstance(exc, socket.gaierror):
+        stage = "dns"
+    actions = ["query_original_resource"] if unknown else {
+        "host_key": ["verify_host_key_out_of_band", "update_verified_known_hosts"],
+        "authentication": ["inspect_credential_reference", "do_not_retry_same_credentials"],
+        "dns": ["inspect_target_address"], "tcp": ["inspect_network_route"],
+        "sftp": ["inspect_transfer_endpoint", "configure_separate_transfer_endpoint"],
+    }.get(stage, ["inspect_configuration"])
+    details = {"diagnostic": diagnostic(stage, route=route, business_input="unknown" if unknown else "not_sent", actions=actions, trace=trace)}
+    if unknown:
+        details["outcome"] = "unknown"
     if isinstance(exc, (TimeoutError, asyncssh.TimeoutError)):
         return RemoteError("timeout", f"{operation} timed out", details)
     if isinstance(exc, asyncssh.HostKeyNotVerifiable):
-        return RemoteError("host_key_untrusted", "SSH host key is unknown or changed; verify known_hosts")
+        return RemoteError("host_key_untrusted", "SSH host key is unknown or changed; verify known_hosts", details)
     if isinstance(exc, asyncssh.PermissionDenied):
-        return RemoteError("authentication_failed", "SSH authentication failed")
+        return RemoteError("authentication_failed", "SSH authentication failed", details)
+    if isinstance(exc, socket.gaierror):
+        return RemoteError("dns_failed", "Target name resolution failed", details)
+    if isinstance(exc, ConnectionRefusedError):
+        return RemoteError("connection_refused", "TCP connection was refused", details)
     # Do not expose raw library messages: they may contain credentials or commands.
     return RemoteError("transport_error", f"{operation} failed ({type(exc).__name__})", details)
 
@@ -63,9 +85,14 @@ async def _close_ssh(conn: asyncssh.SSHClientConnection) -> None:
         raise
     except Exception:
         conn.abort()
+    finally:
+        jump = getattr(conn, "_rmg_jump", None)
+        if jump is not None:
+            conn._rmg_jump = None
+            await _close_ssh(jump)
 
 
-async def connect_ssh(target: dict[str, Any]) -> asyncssh.SSHClientConnection:
+async def connect_ssh(target: dict[str, Any], *, _route="target") -> asyncssh.SSHClientConnection:
     """Connect with explicit, strict known-hosts verification and a bounded timeout."""
     known_hosts = target.get("known_hosts")
     if known_hosts is None:
@@ -74,7 +101,7 @@ async def connect_ssh(target: dict[str, Any]) -> asyncssh.SSHClientConnection:
         raise RemoteError("invalid_config", "known_hosts must name a nonempty file")
     known_hosts = str(Path(known_hosts).expanduser())
     if not Path(known_hosts).is_file():
-        raise RemoteError("host_key_untrusted", "known_hosts file does not exist; add verified host keys first")
+        raise enrich(RemoteError("host_key_untrusted", "known_hosts file does not exist; add verified host keys first"), "host_key", route=_route, actions=["verify_host_key_out_of_band", "update_verified_known_hosts"])
     options: dict[str, Any] = {
         "known_hosts": known_hosts,
         "encoding": target.get("encoding", "utf-8"),
@@ -85,17 +112,59 @@ async def connect_ssh(target: dict[str, Any]) -> asyncssh.SSHClientConnection:
             options[name] = target[name]
     if "client_keys" in options:
         options["client_keys"] = [str(Path(p).expanduser()) for p in options["client_keys"]]
+        if any(not Path(p).is_file() for p in options["client_keys"]):
+            raise enrich(RemoteError("credential_missing", "A referenced SSH private-key file is missing"), "credentials", route=_route, actions=["inspect_client_keys_path"])
     for source, dest in (("password_env", "password"), ("passphrase_env", "passphrase")):
-        value = _secret(target, source)
+        try:
+            value = _secret(target, source)
+        except RemoteError as exc:
+            raise enrich(exc, "credentials", route=_route, actions=["set_referenced_credential", "restart_daemon_after_reviewing_sessions"])
         if value is not None:
             options[dest] = value
     if target.get("ssh_config") is not None:
         options["config"] = [str(Path(p).expanduser()) for p in target["ssh_config"]]
+    elif target.get("jump") or target.get("proxy"):
+        options["config"] = []
+    trace = [{"stage": "tcp", "state": "started", "observed_at": time.time()}]
+    stage = "tcp"
+    class Observer(asyncssh.SSHClient):
+        def connection_made(self, conn):
+            nonlocal stage
+            trace.append({"stage": "tcp", "state": "pass", "observed_at": time.time()})
+            stage = "host_key"
+        def begin_auth(self, username):
+            nonlocal stage
+            trace.append({"stage": "host_key", "state": "pass", "observed_at": time.time()})
+            stage = "authentication"
+        def auth_completed(self):
+            trace.append({"stage": "authentication", "state": "pass", "observed_at": time.time()})
+    options["client_factory"] = Observer
+    jump = sock = None
     try:
         async with asyncio.timeout(options["connect_timeout"]):
-            return await asyncssh.connect(target["host"], int(target.get("port", 22)), **options)
+            if target.get("jump"):
+                jump = await connect_ssh(target["jump"], _route="jump")
+                options["tunnel"] = jump
+            if target.get("proxy"):
+                stage = "proxy"
+                sock = await proxy_socket(target["proxy"], target["host"], int(target.get("port", 22)), options["connect_timeout"])
+                options["sock"] = sock
+                trace.append({"stage": "proxy", "state": "pass", "observed_at": time.time()})
+                stage = "tcp"
+            conn = await asyncssh.connect(target["host"], int(target.get("port", 22)), **options)
+            conn._rmg_jump = jump
+            conn._rmg_diagnostic = diagnostic("authentication", route=_route, trace=trace)
+            return conn
+    except RemoteError as exc:
+        raise enrich(exc, stage, route=_route, trace=trace)
     except (OSError, asyncssh.Error, TimeoutError, ValueError) as exc:
-        raise _error(exc, "SSH connection") from None
+        raise _error(exc, "SSH connection", stage=stage, route=_route, trace=trace) from None
+    finally:
+        if "conn" not in locals():
+            if sock is not None:
+                sock.close()
+            if jump is not None:
+                await _close_ssh(jump)
 
 
 class Terminal:
@@ -165,45 +234,84 @@ class Terminal:
 
 
 async def _login(terminal: Terminal, target: dict[str, Any]) -> None:
-    buffer = ""
-    transcript = ""
-    for step in target.get("login_steps", []):
-        try:
-            pattern = re.compile(step["expect"])
-        except (KeyError, re.error) as exc:
-            raise RemoteError("invalid_config", "Invalid login expect pattern") from exc
-        async with asyncio.timeout(float(step.get("timeout", target.get("connect_timeout", 15)))):
-            while not (match := pattern.search(buffer)):
-                data = await terminal.read()
-                if not data:
-                    raise RemoteError("login_failed", "Terminal closed before the expected login prompt")
-                buffer = (buffer + data)[-65536:]
-                transcript = (transcript + data)[-65536:]
-            buffer = buffer[match.end():]
-            if "send_env" in step:
-                value = _secret(step, "send_env")
-                if value:
-                    terminal._secrets.append(value)
-            elif "send" in step:
-                value = str(step["send"])
-            else:
-                continue
-            await terminal.write((value or "") + ("\r\n" if step.get("newline", True) else ""))
-    # Redaction also covers echoes accumulated across read boundaries during login.
-    for value in terminal._secrets:
-        transcript = transcript.replace(value, "[REDACTED]")
-    terminal.initial_output = transcript
+    """Observe bounded login rules; never replay a node on an observation timeout."""
+    from .connection_routes import validate_login
+    flow = target.get("login_flow")
+    steps = target.get("login_steps", [])
+    try:
+        validate_login(steps, flow)
+    except (ValueError, TypeError, regex.error) as exc:
+        raise RemoteError("invalid_config", "Invalid bounded login flow") from exc
+    if not flow and not steps:
+        return
+    nodes = {node["id"]: node for node in flow["steps"]} if flow else {
+        str(i): {**step, "id": str(i), "next": str(i + 1) if i + 1 < len(steps) else None}
+        for i, step in enumerate(steps)}
+    current = flow["start"] if flow else "0"
+    max_steps = flow.get("max_steps", 32) if flow else len(steps)
+    timeout = flow.get("timeout", 60) if flow else min(300, sum(float(s.get("timeout", 15)) for s in steps))
+    buffer = transcript = ""
+    trace = []
+    # Register every referenced credential before reading, including echoes split
+    # between network frames. Unresolved references fail without login input.
+    for node in nodes.values():
+        if node.get("send_env"):
+            try:
+                secret = _secret(node, "send_env")
+            except RemoteError as exc:
+                raise enrich(exc, "credentials", actions=["set_referenced_credential"])
+            if secret and secret not in terminal._secrets:
+                terminal._secrets.append(secret)
+    try:
+        async with asyncio.timeout(timeout):
+            for visit in range(max_steps):
+                node = nodes[current]
+                patterns = node.get("branches") or [{"expect": node["expect"], "next": node.get("next")}]
+                compiled = [(regex.compile(item["expect"]), item.get("next")) for item in patterns]
+                async with asyncio.timeout(float(node.get("timeout", 15))):
+                    while True:
+                        matches = [(match, edge) for pattern, edge in compiled if (match := pattern.search(buffer, timeout=0.05))]
+                        if matches:
+                            match, edge = min(matches, key=lambda item: item[0].start())
+                            buffer = buffer[match.end():]
+                            break
+                        data = await terminal.read()
+                        if not data:
+                            raise RemoteError("login_failed", "Terminal closed before the expected login prompt")
+                        buffer = (buffer + data)[-65536:]
+                        transcript = (transcript + data)[-65536:]
+                    trace.append({"stage": "login", "node": current, "state": "matched", "observed_at": time.time()})
+                    if "send_env" in node or "send" in node:
+                        value = _secret(node, "send_env") if "send_env" in node else str(node["send"])
+                        await terminal.write((value or "") + ("\r\n" if node.get("newline", True) else ""))
+                        trace.append({"stage": "login", "node": current, "state": "input_sent", "observed_at": time.time()})
+                    if node.get("finish") or edge is None:
+                        terminal.initial_output = transcript
+                        terminal.login_diagnostic = diagnostic("login", trace=trace, evidence=transcript)
+                        terminal.diagnostic = terminal.login_diagnostic
+                        return
+                    current = edge
+            raise RemoteError("login_step_limit", "Login flow exceeded its traversal limit")
+    except (RemoteError, TimeoutError) as exc:
+        error = exc if isinstance(exc, RemoteError) else RemoteError("timeout", "Login observation timed out")
+        trace.append({"stage": "login", "node": current, "state": "failed", "code": error.code, "observed_at": time.time()})
+        error.details["diagnostic"] = diagnostic("login", evidence=transcript, trace=trace,
+                                                actions=["inspect_login_trace", "patch_login_rules", "recheck_connection"])
+        raise error from None
 
 
 async def open_terminal(target: dict[str, Any], command: str | None = None) -> Terminal:
     terminal = None
     conn = None
+    phase = "tcp"
+    routed_login = bool(target.get("login_steps") or target.get("login_flow"))
     try:
         if target.get("protocol", "ssh") == "ssh":
             conn = await connect_ssh(target)
+            phase = "terminal"
             async with asyncio.timeout(float(target.get("connect_timeout", 15))):
                 process = await conn.create_process(
-                    command, term_type=target.get("term_type", "xterm"),
+                    None if routed_login else command, term_type=target.get("term_type", "xterm"),
                     term_size=(int(target.get("cols", 80)), int(target.get("rows", 24))),
                     stderr=asyncssh.STDOUT,
                 )
@@ -220,8 +328,12 @@ async def open_terminal(target: dict[str, Any], command: str | None = None) -> T
             terminal = Terminal(reader, writer)
         else:
             raise RemoteError("invalid_config", "Protocol must be ssh or telnet")
+        from .redact import target_secrets
+        terminal._secrets.extend(target_secrets(target))
+        phase = "login"
         await _login(terminal, target)
-        if target.get("protocol") == "telnet" and command is not None:
+        if (target.get("protocol") == "telnet" or routed_login) and command is not None:
+            phase = "command"
             await terminal.write(command + "\r\n")
         return terminal
     except BaseException as exc:
@@ -230,7 +342,7 @@ async def open_terminal(target: dict[str, Any], command: str | None = None) -> T
         elif conn is not None:
             await _close_ssh(conn)
         if isinstance(exc, (OSError, asyncssh.Error, TimeoutError, UnicodeError)):
-            raise _error(exc, "Terminal connection") from None
+            raise _error(exc, "Terminal connection", stage=phase, unknown=command is not None and phase in ("terminal", "command")) from None
         raise
 
 
@@ -241,7 +353,7 @@ async def run_command(target: dict[str, Any], command: str, timeout: float = 30,
     Telnet's stdout contains merged output. It cannot supply a separate stderr.
     This channel is never an application's existing interactive terminal.
     """
-    if target.get("protocol", "ssh") == "telnet":
+    if target.get("protocol", "ssh") == "telnet" or target.get("login_steps") or target.get("login_flow"):
         if target.get("shell") != "posix":
             raise RemoteError("unsupported", "Telnet command execution requires shell='posix'")
         if input is not None and ("\x00" in input or (input and not input.endswith("\n"))):
@@ -339,9 +451,17 @@ async def run_command(target: dict[str, Any], command: str, timeout: float = 30,
 def _transfer_target(target: dict[str, Any]) -> dict[str, Any]:
     if target.get("protocol", "ssh") == "telnet" and not target.get("transfer"):
         raise RemoteError("unsupported", "Telnet has no file channel; configure an SSH transfer endpoint")
+    if (target.get("login_steps") or target.get("login_flow")) and not target.get("transfer"):
+        raise enrich(RemoteError("transfer_endpoint_required", "Menu login cannot establish an SFTP destination; configure an independent SSH transfer endpoint"), "sftp", actions=["configure_separate_transfer_endpoint"])
     merged = dict(target)
     if target.get("protocol") == "telnet":
         merged.pop("port", None)
+    if target.get("transfer"):
+        independent = target.get("protocol") == "telnet" or target.get("login_steps") or target.get("login_flow")
+        if independent and not target["transfer"].get("host"):
+            raise enrich(RemoteError("transfer_endpoint_required", "Independent transfer endpoint must explicitly name its host"), "sftp")
+        for field in (("login_steps", "login_flow", "jump", "proxy", "port") if independent else ("login_steps", "login_flow")):
+            merged.pop(field, None)
     merged.update(target.get("transfer") or {})
     merged["protocol"] = "ssh"
     return merged
@@ -396,7 +516,7 @@ def _safe_local_name(name: str) -> bool:
         return False
     stem = name.split(".", 1)[0].upper()
     return stem not in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} and not re.fullmatch(
-        r"(?:COM|LPT)[1-9¹²³]", stem)
+        r"(?:COM|LPT)[1-9\u00b9\u00b2\u00b3]", stem)
 
 
 def _progress(callback, transferred, total, phase, remote):
@@ -419,7 +539,8 @@ async def _sftp_file(sftp: Any, local: Path, remote: str, direction: str, overwr
         try:
             digest = hashlib.sha256()
             size = 0
-            total = local.stat().st_size
+            before = local.stat()
+            total = before.st_size
             _progress(progress, 0, total, "transferring", remote)
             async with _open_sftp_file(sftp, temporary_remote, "xb") as dest:
                 with local.open("rb") as source:
@@ -428,6 +549,9 @@ async def _sftp_file(sftp: Any, local: Path, remote: str, direction: str, overwr
                         size += len(chunk)
                         await dest.write(chunk)
                         _progress(progress, size, total, "transferring", remote)
+            after = local.stat()
+            if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
+                raise RemoteError("source_changed", "Upload source changed during transfer; temporary data was not published")
             expected = digest.hexdigest()
             _progress(progress, size, total, "verifying", remote)
             if await _hash_remote(sftp, temporary_remote) != expected:
@@ -474,52 +598,6 @@ async def _sftp_file(sftp: Any, local: Path, remote: str, direction: str, overwr
     finally:
         with contextlib.suppress(OSError):
             temporary_local.unlink()
-
-
-async def _sftp_tree(sftp: Any, local: Path, remote: str, direction: str, overwrite: bool,
-                     progress=None) -> list[dict[str, Any]]:
-    results = []
-    if direction == "upload":
-        if local.is_symlink():
-            raise RemoteError("unsafe_path", "Recursive upload refuses symlinks")
-        if not await sftp.lexists(remote):
-            await sftp.mkdir(remote)
-        elif not overwrite:
-            raise RemoteError("already_exists", "Remote directory already exists")
-        elif (await sftp.lstat(remote)).type != asyncssh.FILEXFER_TYPE_DIRECTORY:
-            raise RemoteError("unsafe_path", "Remote destination is not a directory")
-        for child in sorted(local.iterdir()):
-            remote_child = posixpath.join(remote, child.name)
-            if child.is_symlink():
-                raise RemoteError("unsafe_path", "Recursive upload refuses symlinks")
-            if child.is_dir():
-                results.extend(await _sftp_tree(sftp, child, remote_child, direction, overwrite, progress))
-            else:
-                results.append({"path": remote_child, **await _sftp_file(sftp, child, remote_child, direction, overwrite, progress)})
-    else:
-        if local.is_symlink():
-            raise RemoteError("unsafe_path", "Recursive download refuses symlinks")
-        if not local.exists():
-            local.mkdir()
-        elif not overwrite:
-            raise RemoteError("already_exists", "Local directory already exists")
-        elif not local.is_dir():
-            raise RemoteError("unsafe_path", "Local destination is not a directory")
-        async for entry in sftp.scandir(remote):
-            name = entry.filename
-            if name in (".", ".."):
-                continue
-            if not _safe_local_name(name):
-                raise RemoteError("unsafe_path", "Remote directory entry is not a safe local filename")
-            remote_child = posixpath.join(remote, name)
-            attrs = await sftp.lstat(remote_child)
-            if attrs.type == asyncssh.FILEXFER_TYPE_DIRECTORY:
-                results.extend(await _sftp_tree(sftp, local / name, remote_child, direction, overwrite, progress))
-            elif attrs.type == asyncssh.FILEXFER_TYPE_REGULAR:
-                results.append({"path": remote_child, **await _sftp_file(sftp, local / name, remote_child, direction, overwrite, progress)})
-            else:
-                raise RemoteError("unsafe_path", "Recursive download refuses symlinks and special files")
-    return results
 
 
 async def _legacy_scp(conn: Any, target: dict[str, Any], local: Path, remote: str,
@@ -582,7 +660,8 @@ async def _legacy_scp(conn: Any, target: dict[str, Any], local: Path, remote: st
 async def transfer(target: dict[str, Any], local_path: str, remote_path: str,
                    direction: str = "upload", protocol: str = "sftp", overwrite: bool = False,
                    recursive: bool = False,
-                   progress: Callable[[dict], None] | None = None) -> dict[str, Any]:
+                   progress: Callable[[dict], None] | None = None, *, concurrency: int = 1,
+                   conflict: str | None = None, resume: bool = False) -> dict[str, Any]:
     """Transfer to an exact destination path, with explicit opt-in replacement.
 
     SFTP verifies each file with SHA-256. Recursive transfer can partially finish;
@@ -591,6 +670,15 @@ async def transfer(target: dict[str, Any], local_path: str, remote_path: str,
     """
     if direction not in ("upload", "download") or protocol not in ("sftp", "scp"):
         raise RemoteError("invalid_argument", "direction must be upload/download and protocol sftp/scp")
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or not 1 <= concurrency <= 8:
+        raise RemoteError("invalid_argument", "SFTP concurrency must be in [1,8]")
+    if conflict not in (None, "error", "overwrite", "skip-identical"):
+        raise RemoteError("invalid_argument", "Conflict policy must be error, overwrite, or skip-identical")
+    if overwrite and conflict not in (None, "overwrite"):
+        raise RemoteError("invalid_argument", "overwrite conflicts with the explicit conflict policy")
+    conflict = conflict or ("overwrite" if overwrite else "error")
+    if protocol == "scp" and (resume or concurrency != 1 or conflict == "skip-identical"):
+        raise RemoteError("unsupported", "Verified resume and concurrency require SFTP")
     if not remote_path or "\x00" in remote_path or "\n" in remote_path or "\r" in remote_path:
         raise RemoteError("invalid_path", "Remote path is empty or contains control characters")
     if not remote_path.startswith("/"):
@@ -599,22 +687,19 @@ async def transfer(target: dict[str, Any], local_path: str, remote_path: str,
     resolved = _transfer_target(target)
     local = Path(local_path).expanduser().absolute()
     conn = await connect_ssh(resolved)
+    manifest = []
     try:
         async with asyncio.timeout(float(target.get("transfer_timeout", 3600))):
             if protocol == "scp":
-                result = await _legacy_scp(conn, resolved, local, remote_path, direction, overwrite, recursive, progress)
+                result = await _legacy_scp(conn, resolved, local, remote_path, direction, conflict == "overwrite", recursive, progress)
             else:
-                sftp = await conn.start_sftp_client()
                 try:
-                    directory = local.is_dir() if direction == "upload" else (
-                        (await sftp.lstat(remote_path)).type == asyncssh.FILEXFER_TYPE_DIRECTORY)
-                    if directory:
-                        if not recursive:
-                            raise RemoteError("invalid_argument", "Directory transfer requires recursive=True")
-                        files = await _sftp_tree(sftp, local, remote_path, direction, overwrite, progress)
-                        result = {"files": files, "bytes": sum(item["bytes"] for item in files)}
-                    else:
-                        result = await _sftp_file(sftp, local, remote_path, direction, overwrite, progress)
+                    sftp = await conn.start_sftp_client()
+                except (OSError, asyncssh.Error) as exc:
+                    raise _error(exc, "SFTP channel", stage="sftp") from None
+                try:
+                    from .transfer_batch import transfer_batch
+                    result = await transfer_batch(sftp, local, remote_path, direction, recursive, conflict, resume, concurrency, progress, conn, manifest.extend)
                     result.update({"protocol": "sftp", "verification": "sha256"})
                 finally:
                     # The owning connection is closed below. Avoid waiting
@@ -622,9 +707,14 @@ async def transfer(target: dict[str, Any], local_path: str, remote_path: str,
                     sftp.exit()
             result.update({"direction": direction, "local_path": str(local), "remote_path": remote_path})
             return result
-    except RemoteError:
+    except RemoteError as exc:
+        if manifest:
+            exc.details.setdefault("manifest", manifest)
         raise
     except (OSError, asyncssh.Error, TimeoutError) as exc:
-        raise _error(exc, "File transfer", unknown=True) from None
+        error = _error(exc, "File transfer", unknown=True)
+        if manifest:
+            error.details["manifest"] = [{**item, "state": "unknown" if item["state"] == "running" else "not_started" if item["state"] == "pending" else item["state"]} for item in manifest]
+        raise error from None
     finally:
         await _close_ssh(conn)

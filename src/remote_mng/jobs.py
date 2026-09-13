@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import shlex
 import uuid
@@ -21,8 +22,10 @@ HELPER_NAME = "job-helper-v1.sh"
 MAX_LOG_BYTES = 262144
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _ENV = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_NUMERIC = {"pid", "started_at", "finished_at", "exit_code", "offset", "next_offset", "snapshot_size", "protocol"}
-_BOOL = {"supported", "reused", "cancel_requested", "eof"}
+_NUMERIC = {"pid", "started_at", "finished_at", "exit_code", "offset", "next_offset", "snapshot_size", "protocol",
+            "storage_protocol", "free_bytes", "used_bytes", "base_offset", "script_exit_code", "script_finished_at"}
+_BOOL = {"supported", "reused", "cancel_requested", "eof", "gap", "logs_deleted", "log_incomplete",
+         "log_rotation", "cleanup", "cleaned", "logs_draining"}
 
 
 def _job_id(value: str) -> str:
@@ -91,6 +94,8 @@ class JobClient:
 
     async def install(self) -> dict[str, Any]:
         payload = files("remote_mng").joinpath("assets", HELPER_NAME).read_text(encoding="utf-8")
+        storage = files("remote_mng").joinpath("assets", "job-storage-v1.sh").read_text(encoding="utf-8")
+        payload = payload.replace("# REMOTE_MNG_STORAGE_EXTENSION", storage)
         marker = "REMOTE_MNG_" + uuid.uuid4().hex
         temporary = ".helper-" + uuid.uuid4().hex
         command = (
@@ -112,6 +117,46 @@ class JobClient:
         """Probe an already installed helper without changing remote files."""
         return _parse_lines(await self._raw(["probe"], timeout=15))
 
+    async def health(self) -> dict[str, Any]:
+        result = _parse_lines(await self._raw(["health"], timeout=15))
+        result.update(helper_dir=self.helper_dir,
+                      max_log_bytes=self.target.get("helper_max_log_bytes", 16777216),
+                      min_free_bytes=self.target.get("helper_min_free_bytes", 8388608))
+        result["space_ready"] = result.get("free_bytes", 0) >= result["min_free_bytes"]
+        return result
+
+    async def cleanup(self, job_ids: list[str], apply: bool = False, expected_plan: str | None = None) -> dict[str, Any]:
+        """Delete only logs of explicitly selected terminal jobs; keep IDs and exit evidence."""
+        if not isinstance(apply, bool):
+            raise RemoteError("invalid_cleanup", "apply must be a boolean")
+        if not isinstance(job_ids, list) or not 1 <= len(job_ids) <= 100 or len(set(job_ids)) != len(job_ids):
+            raise RemoteError("invalid_job_ids", "Select 1 to 100 distinct job IDs")
+        records = []
+        for job_id in sorted(job_ids):
+            status = await self.status(_job_id(job_id))
+            eligible = status.get("state") in {"succeeded", "failed"} and "exit_code" in status
+            records.append({"job_id": job_id, "state": status.get("state"), "eligible": eligible,
+                            "exit_code": status.get("exit_code"), "finished_at": status.get("finished_at"),
+                            "logs_deleted": status.get("logs_deleted", False)})
+        plan = {"helper_dir": self.helper_dir, "jobs": records, "scope": "logs_only",
+                "kept": ["job_id", "request_identity", "exit_status"]}
+        digest = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+        plan.update(plan_id=digest, applied=False)
+        if not apply:
+            return plan
+        if not expected_plan or expected_plan != digest:
+            raise RemoteError("cleanup_conflict", "Preview changed or missing; obtain a fresh cleanup preview", {"plan": plan})
+        if not all(item["eligible"] for item in records):
+            raise RemoteError("job_not_terminal", "Active or unknown jobs cannot be cleaned", {"plan": plan})
+        cleaned = []
+        for item in records:
+            evidence = f'{item["exit_code"]} {item["finished_at"]}'
+            try:
+                cleaned.append(_parse_lines(await self._raw(["cleanup", item["job_id"], evidence])))
+            except RemoteError as exc:
+                raise RemoteError(exc.code, exc.message, {**exc.details, "cleaned": cleaned, "plan_id": digest}) from exc
+        return {**plan, "applied": True, "results": cleaned}
+
     async def start(self, command: str, cwd: str | None = None, env: dict[str, str] | None = None, job_id: str | None = None) -> dict[str, Any]:
         job_id = _job_id(job_id if job_id is not None else uuid.uuid4().hex)
         if not isinstance(command, str) or not command.strip() or "\x00" in command:
@@ -132,14 +177,21 @@ class JobClient:
         script = "\n".join(lines) + "\n"
         digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
         try:
-            result = _parse_lines(await self._raw(["start", job_id, digest], script=script))
+            capabilities = await self.inspect()
+            if (capabilities.get("protocol") != 1 or not capabilities.get("supported") or
+                    capabilities.get("storage_protocol", 0) < 1 or not capabilities.get("log_rotation")):
+                raise RemoteError("helper_upgrade_required", "Install the current helper before submitting new jobs; no job command was executed",
+                                  {"business_input": "not_sent", "capabilities": capabilities})
+            result = _parse_lines(await self._raw(["start", job_id, digest,
+                str(self.target.get("helper_max_log_bytes", 16777216)),
+                str(self.target.get("helper_min_free_bytes", 8388608))], script=script))
         except RemoteError as exc:
             # The caller must retain this id after lost acknowledgement. A new
             # id would permit duplicate execution and is never retried here.
             details = dict(getattr(exc, "details", None) or {})
             details.update(job_id=job_id, recovery=(
                 "Install the helper, then repeat the same job and step IDs; no job command was executed"
-                if exc.code == "helper_not_installed" else
+                if exc.code in {"helper_not_installed", "helper_upgrade_required"} else
                 "Choose a new ID for different work; this ID belongs to another request"
                 if exc.code == "job_id_conflict" else
                 "Query this job id before submitting new work; the remote command may have started"))

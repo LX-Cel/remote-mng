@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "remote-mng"
-version = "0.2.0"
+version = "0.3.0"
 description = "Agent-first SSH/Telnet operations, durable jobs and a personal status console"
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,7 @@ Issues = "https://github.com/LX-Cel/remote-mng/issues"
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12", "build>=1.2", "pip-audit>=2.9"]
+bundle = ["pyinstaller>=6.15,<7"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/remote_mng"]

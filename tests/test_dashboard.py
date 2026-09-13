@@ -254,6 +254,50 @@ async def test_internal_errors_do_not_return_exception_credentials(dashboard):
     assert "PASSWORD" not in await response.text()
 
 
+async def test_cleanup_only_uses_jobs_owned_by_task_and_forwards_preview_token(dashboard):
+    client, manager = dashboard
+
+    async def get_task(id):
+        return {"id": id, "target": "lab", "steps": [
+            {"method": "job.start", "resource": {"kind": "job", "target": "lab", "job_id": "owned"}},
+            {"method": "job.start", "resource": {"kind": "job", "target": "other", "job_id": "foreign"}},
+            {"method": "job.status", "resource": {"kind": "job", "target": "lab", "job_id": "observed"}},
+            {"method": "job.start", "error": {"code": "job_id_conflict"},
+             "resource": {"kind": "job", "target": "lab", "job_id": "conflicted"}},
+        ]}
+
+    async def dispatch(method, params):
+        manager.calls.append((method, params))
+        return {"plan_id": "sample-plan", "jobs": [{"job_id": "owned", "eligible": True}]}
+
+    manager.taskbook.get = get_task
+    manager.dispatch = dispatch
+    path = "/ui/api/tasks/task-1/cleanup"
+    assert (await client.post(path, json={}, headers=auth(client))).status == 403
+    assert (await client.post(path, json={"job_ids": ["foreign"]}, headers=same_origin(client))).status == 400
+    assert (await client.post(path, json={"apply": "yes"}, headers=same_origin(client))).status == 400
+    assert manager.calls == []
+    assert (await client.post(path, json={}, headers=same_origin(client))).status == 200
+    assert manager.calls[-1] == ("job.cleanup", {"target": "lab", "job_ids": ["owned"],
+                                               "apply": False, "expected_plan": None})
+    assert (await client.post(path, json={"apply": True, "expected_plan": "sample-plan"},
+                              headers=same_origin(client))).status == 200
+    assert manager.calls[-1][1]["expected_plan"] == "sample-plan"
+    assert manager.calls[-1][1]["apply"] is True
+
+
+async def test_attention_includes_stage_evidence_without_remote_probe(dashboard):
+    client, manager = dashboard
+    manager.store.list = lambda kind: [{"target": "设备-one", "checked_at": 456, "checks": [
+        {"state": "fail", "message": "Login prompt changed", "advice": "Inspect login_flow",
+         "diagnostic": {"stage": "login_flow", "business_input": "not_sent"}}
+    ]}] if kind == "target_inspection" else []
+    data = (await (await client.get("/ui/api/overview", headers=auth(client))).json())["result"]
+    assert data["attention"][0]["evidence"]["business_input"] == "not_sent"
+    assert data["attention"][0]["observed_at"] == 456
+    assert manager.calls == []
+
+
 def test_token_must_not_be_empty():
     with pytest.raises(ValueError):
         install_dashboard(web.Application(), FakeManager(), "", lambda: {})

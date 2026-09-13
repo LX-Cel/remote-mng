@@ -116,6 +116,7 @@ def install_dashboard(app, manager, ui_token, status_provider):
         server = await _resolve(status_provider())
         targets = await _resolve(manager.target_list())
         inspections = {item["target"]: item for item in manager.store.list("target_inspection")}
+        storage = {item["target"]: item for item in manager.store.list("storage_health")}
         visible_targets = []
         for target in targets:
             cfg = target.get("config", {})
@@ -123,6 +124,7 @@ def install_dashboard(app, manager, ui_token, status_provider):
                 "name": target["name"],
                 **{key: cfg.get(key) for key in ("protocol", "host", "port")},
                 "inspection": inspections.get(target["name"]),
+                "storage": storage.get(target["name"]),
                 **{key: target[key] for key in ("inspection", "last_check", "observed_at") if key in target},
             })
         tasks = (await _resolve(manager.taskbook.list()))[:100]
@@ -130,8 +132,20 @@ def install_dashboard(app, manager, ui_token, status_provider):
         sessions = await _resolve(manager.session_list())
         task_fields = ("id", "title", "target", "artifact", "created_at", "updated_at", "state", "sealed",
                        "outcome", "business_verification")
-        record_fields = ("id", "target", "kind", "state", "created_at", "updated_at", "state_label")
+        record_fields = ("id", "target", "kind", "state", "created_at", "updated_at", "state_label", "progress", "error", "shell")
+        attention = []
+        for target in visible_targets:
+            report = target.get("inspection") or {}
+            for check in report.get("checks", []):
+                if check.get("state") in {"fail", "warning", "warn"}:
+                    attention.append({"target": target["name"], "state": "needs_attention",
+                                      "message": check.get("message"), "advice": check.get("advice"),
+                                      "observed_at": report.get("checked_at"), "evidence": check.get("diagnostic")})
+        attention.extend({"task_id": item["id"], "target": item.get("target"), "state": item["state"],
+                          "message": item.get("title", item["id"]), "observed_at": item.get("updated_at")}
+                         for item in tasks if item.get("state") in {"failed", "unknown", "needs_attention"})
         return result({
+            "attention": attention[:100],
             "server": {key: server[key] for key in ("running", "pid", "version", "started_at") if key in server},
             "targets": visible_targets,
             "tasks": [{**{key: task[key] for key in task_fields if key in task},
@@ -160,6 +174,31 @@ def install_dashboard(app, manager, ui_token, status_provider):
 
     async def check(request):
         return result(await manager.dispatch("target.inspect", {"target": _name(request.match_info["name"])}))
+
+    async def health(request):
+        return result(await manager.dispatch("job.health", {"target": _name(request.match_info["name"])}))
+
+    async def cleanup(request):
+        id = _name(request.match_info["id"], task=True)
+        task_record = await _resolve(manager.taskbook.get(id))
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise RemoteError("invalid_params", "A JSON cleanup request is required") from None
+        if (not isinstance(body, dict) or set(body) - {"apply", "expected_plan"}
+                or not isinstance(body.get("apply", False), bool)):
+            raise RemoteError("invalid_params", "Cleanup accepts apply and expected_plan only")
+        target = task_record.get("target")
+        ids = sorted({step["resource"]["job_id"] for step in task_record.get("steps", [])
+                      if step.get("method") == "job.start" and not step.get("error")
+                      and step.get("resource", {}).get("kind") == "job"
+                      and step["resource"].get("target") == target and step["resource"].get("job_id")})
+        if not ids:
+            raise RemoteError("cleanup_unavailable", "This task has no accepted managed jobs to clean")
+        return result(await manager.dispatch("job.cleanup", {
+            "target": target, "job_ids": ids, "apply": body.get("apply", False),
+            "expected_plan": body.get("expected_plan"),
+        }))
 
     async def logs(request):
         query = request.query
@@ -192,4 +231,6 @@ def install_dashboard(app, manager, ui_token, status_provider):
     app.router.add_get("/ui/api/tasks/{id}", task)
     app.router.add_post("/ui/api/tasks/{id}/{action:refresh|cancel}", task_action)
     app.router.add_post("/ui/api/targets/{name}/check", check)
+    app.router.add_post("/ui/api/targets/{name}/health", health)
+    app.router.add_post("/ui/api/tasks/{id}/cleanup", cleanup)
     app.router.add_get("/ui/api/logs", logs)

@@ -11,6 +11,7 @@ from . import __version__, transports
 from .errors import RemoteError
 from .jobs import JobClient
 from .skill_install import skill_status
+from .redact import Redactor, target_secrets
 
 
 def check(name, state, message, advice=None, **details):
@@ -57,13 +58,20 @@ async def local_doctor(home=None, claude_dir=None):
 
 async def inspect_target(manager, target, directory=None):
     cfg = manager.config.target(target, "check")
+    redactor = Redactor(target_secrets(cfg))
     checks = []
     # Validate only referenced credentials, without copying their values to diagnostics.
     credential_configs = [cfg]
     if cfg.get("transfer"):
         credential_configs.append({**cfg, **cfg["transfer"], "protocol": "ssh"})
+    for entry in list(credential_configs):
+        if entry.get("jump"):
+            credential_configs.append(entry["jump"])
+    for entry in list(credential_configs):
+        if entry.get("proxy"):
+            credential_configs.append(entry["proxy"])
     for index, entry in enumerate(credential_configs):
-        for name in ("password_env", "passphrase_env"):
+        for name in ("password_env", "passphrase_env", "username_env"):
             key = entry.get(name)
             if key:
                 present = bool(os.environ.get(key))
@@ -81,15 +89,18 @@ async def inspect_target(manager, target, directory=None):
         checks.append(check("connection", "pass", "Authenticated connection succeeded"))
     except Exception as exc:
         code = exc.code if isinstance(exc, RemoteError) else "connection_failed"
-        connection = {"connected": False, "error_code": code}
+        failure = exc.as_dict() if isinstance(exc, RemoteError) else transports._error(exc, "Connection", stage="tcp").as_dict()
+        failure = redactor.structured(failure)
+        connection = {"connected": False, "error_code": code, "error": failure}
         checks.append(check("connection", "fail", "Connection could not be verified",
-                            "Check address, verified SSH host key, credentials, and daemon environment.", code=code))
+                            "Check the recorded failure stage and recovery actions before retrying.", code=code,
+                            diagnostic=failure.get("details", {}).get("diagnostic")))
     if connection.get("connected"):
         if cfg.get("shell") == "posix":
             helper = JobClient(cfg)
             command = (
                 'printf "shell\\tposix\\n"; '
-                'for item in setsid cat mkdir mv chmod date sleep tail head wc base64 tr; do '
+                'for item in setsid cat mkdir mv chmod date sleep tail head wc base64 tr dd mkfifo rm df du awk; do '
                 'command -v "$item" >/dev/null 2>&1 || printf "missing\\t%s\\n" "$item"; done; '
                 'test -r /proc/sys/kernel/random/boot_id && printf "linux\\tyes\\n"; '
                 f'root={helper._root}; '
@@ -116,6 +127,15 @@ async def inspect_target(manager, target, directory=None):
                         supported = probe.get("protocol") == 1 and probe.get("supported") is True
                         checks.append(check("helper", "pass" if supported else "warning", "Installed helper protocol checked",
                                             None if supported else "Install the helper supplied with this tool.", protocol=probe.get("protocol")))
+                        if supported and probe.get("storage_protocol"):
+                            health = await helper.health()
+                            free = health.get("free_bytes")
+                            enough = isinstance(free, int) and free >= cfg.get("helper_min_free_bytes", 8 * 1024 * 1024)
+                            checks.append(check("helper_storage", "pass" if enough else "warning", "Remote helper storage inspected",
+                                                None if enough else "Inspect terminal jobs and preview explicit cleanup; preserve active and unknown jobs.", **health))
+                        elif supported:
+                            checks.append(check("helper_storage", "not_checked", "Installed helper has no storage protocol",
+                                                "Existing jobs remain queryable; install the bundled helper to enable storage health and log rotation."))
                     except RemoteError:
                         checks.append(check("helper", "warning", "Installed helper could not confirm support", "Review target capabilities before reinstalling the helper."))
                 else:
@@ -131,14 +151,16 @@ async def inspect_target(manager, target, directory=None):
         else:
             checks.append(check("posix_shell", "not_checked", "Target is declared as a menu/application terminal; no shell commands were sent"))
         if cfg["protocol"] == "ssh" or cfg.get("transfer"):
-            transfer_cfg = {**cfg, **(cfg.get("transfer") or {}), "protocol": "ssh"}
             conn = None
             try:
+                transfer_cfg = transports._transfer_target(cfg)
                 conn = await transports.connect_ssh(transfer_cfg)
                 async with conn.start_sftp_client():
                     checks.append(check("sftp", "pass", "SFTP subsystem opened; no file was written"))
-            except Exception:
-                checks.append(check("sftp", "warning", "SFTP could not be verified", "Check the file-transfer endpoint; legacy SCP requires an explicit transfer test."))
+            except Exception as exc:
+                error = exc if isinstance(exc, RemoteError) else transports._error(exc, "SFTP channel", stage="sftp")
+                checks.append(check("sftp", "warning", "SFTP could not be verified", "Check the independent file-transfer endpoint; a menu shell does not establish an SFTP destination.",
+                                    code=error.code, diagnostic=error.details.get("diagnostic")))
             finally:
                 if conn:
                     await transports._close_ssh(conn)
@@ -147,7 +169,10 @@ async def inspect_target(manager, target, directory=None):
         checks.append(check("scp", "not_checked", "Legacy SCP transfer was not exercised by this read-only check"))
     state = "needs_attention" if any(c["state"] in {"fail", "warning"} for c in checks) else "ready"
     result = {"target": target, "state": state, "checked_at": time.time(), "connection": connection,
-              "checks": checks, "scope": "read_only_probe", "shell_declared": cfg.get("shell")}
+              "checks": checks, "scope": "read_only_probe", "shell_declared": cfg.get("shell"),
+              "job_ready": cfg.get("shell") == "posix" and any(c["name"] == "helper" and c["state"] == "pass" for c in checks)
+                           and not any(c["name"] in ("job_dependencies", "helper_storage", "posix_shell") and c["state"] in ("fail", "warning") for c in checks)}
+    result = redactor.structured(result)
     key = "inspection-" + hashlib.sha256(target.encode()).hexdigest()[:24]
     manager.store.put({"id": key, "kind": "target_inspection", **result})
     return result

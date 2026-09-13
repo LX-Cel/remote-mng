@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .client import Client
 from .errors import RemoteError
 
@@ -33,6 +34,10 @@ when its terminal should actually be disconnected. Closing MCP leaves sessions r
 Use environment variable references and local SSH keys for credentials. Never ask the
 user to paste passwords or private keys into tool arguments. Telnet and file-transfer
 connections are independently configured. SCP/SFTP require a separate SSH endpoint.
+For commands which preserve Shell cwd/environment, explicitly attest a POSIX Shell with
+session_shell_enable, then use session_exec with stable request IDs. Never enable this
+inside an application frontend. Observation timeouts only permit observing the same ID;
+session_interrupt is an explicit action and does not confirm remote termination.
 On Windows, start the daemon from an independent terminal using rmg server start (with
 the same --home setting) before connecting MCP. Windows MCP hosts can kill descendants
 on disconnect, so the MCP adapter deliberately does not auto-start the daemon there.
@@ -46,7 +51,7 @@ def create_server(home: str | Path | None = None) -> Any:
     from mcp.server.mcpserver.exceptions import ToolError
     from mcp.types import ToolAnnotations
 
-    server = MCPServer("remote-mng", instructions=INSTRUCTIONS, version="0.1.0", log_level="WARNING")
+    server = MCPServer("remote-mng", instructions=INSTRUCTIONS, version=__version__, log_level="WARNING")
     # A Windows host may kill every descendant when its stdio transport closes.
     # An independently started daemon gives CLI/MCP a verifiable shared lifetime.
     client = Client(home=home, autostart=os.name != "nt")
@@ -96,6 +101,20 @@ def create_server(home: str | Path | None = None) -> Any:
     async def target_check(target: str) -> dict[str, Any]:
         """Check connection and available target capabilities; errors are not proof of job failure."""
         return await rpc("target.check", {"target": target})
+
+    @server.tool(annotations=read_only)
+    async def target_snapshot(name: str) -> dict[str, Any]:
+        """Read a target's configuration and revision before preparing a repair."""
+        return await rpc("target.snapshot", {"name": name})
+
+    @server.tool(annotations=mutate)
+    async def target_patch(name: str, patch: dict[str, Any], expected_revision: str,
+                           dry_run: bool = True) -> dict[str, Any]:
+        """Preview a validated configuration repair; dry_run=false applies it with a backup
+        only if expected_revision still matches. No credentials or identities are guessed.
+        """
+        return await rpc("target.patch", {"name": name, "patch": patch,
+                                          "expected_revision": expected_revision, "dry_run": dry_run})
 
     @server.tool(annotations=mutate)
     async def exec_start(target: str, command: str, cwd: str | None = None,
@@ -190,6 +209,41 @@ def create_server(home: str | Path | None = None) -> Any:
                                                   "timeout": timeout, "regex": regex})
 
     @server.tool(annotations=mutate)
+    async def session_shell_enable(id: str, control_token: str, confirm_posix: bool = False,
+                                   timeout: float = 10) -> dict[str, Any]:
+        """Enable framed commands only after explicit confirmation that the current terminal
+        is a POSIX Shell. Never probe an application frontend. Returns shell.state=ready
+        only after a fresh handshake; raw input and terminal changes revoke readiness.
+        """
+        return await rpc("session.shell.enable", {"id": id, "control_token": control_token,
+                                                   "confirm_posix": confirm_posix, "timeout": timeout})
+
+    @server.tool(annotations=mutate)
+    async def session_exec(id: str, command: str, control_token: str, request_id: str,
+                           timeout: float = 30, sensitive: bool = False) -> dict[str, Any]:
+        """Execute at most 1024 UTF-8 command bytes in an enabled POSIX Shell, preserving
+        cwd/export. Returns the command's exit code and terminal output interval; background
+        output can share that interval. Reuse the same request_id and command after timeout
+        to observe without resending. No completion frame means unknown, never success.
+        """
+        return await rpc("session.exec", {"id": id, "command": command, "control_token": control_token,
+                                          "request_id": request_id, "timeout": timeout, "sensitive": sensitive})
+
+    @server.tool(annotations=read_only)
+    async def session_exec_get(id: str, request_id: str) -> dict[str, Any]:
+        """Read an existing framed Shell request's last stored evidence without sending input.
+        To extend a bounded observation, call session_exec with exactly the same request.
+        """
+        return await rpc("session.exec.get", {"id": id, "request_id": request_id})
+
+    @server.tool(annotations=mutate)
+    async def session_interrupt(id: str, control_token: str) -> dict[str, Any]:
+        """Explicitly send Ctrl-C to a terminal and revoke Shell capability. Any pending
+        framed command remains unknown. Sending the interrupt does not prove it stopped.
+        """
+        return await rpc("session.interrupt", {"id": id, "control_token": control_token})
+
+    @server.tool(annotations=mutate)
     async def session_claim(id: str, force: bool = False) -> dict[str, Any]:
         """Acquire exclusive terminal input control and return a new token. force=true
         explicitly revokes the previous writer's token; use only for an intended handoff.
@@ -226,7 +280,8 @@ def create_server(home: str | Path | None = None) -> Any:
     @server.tool(annotations=mutate)
     async def file_upload(target: str, local_path: str, remote_path: str,
                           protocol: str = "sftp", overwrite: bool = False,
-                          recursive: bool = False) -> dict[str, Any]:
+                          recursive: bool = False, concurrency: int = 1,
+                          conflict: str | None = None, resume: bool = False) -> dict[str, Any]:
         """Upload files via SSH and return a transfer operation ID. Use an absolute local
         path. protocol is sftp or scp (legacy SCP). An SSH file endpoint is required even
         when the terminal uses Telnet. Overwriting is opt-in. Upload success is not deployment
@@ -234,19 +289,22 @@ def create_server(home: str | Path | None = None) -> Any:
         """
         return await rpc("transfer.start", {"target": target, "local_path": local_path,
             "remote_path": remote_path, "direction": "upload", "protocol": protocol,
-            "overwrite": overwrite, "recursive": recursive})
+            "overwrite": overwrite, "recursive": recursive, "concurrency": concurrency,
+            "conflict": conflict, "resume": resume})
 
     @server.tool(annotations=mutate)
     async def file_download(target: str, remote_path: str, local_path: str,
                             protocol: str = "sftp", overwrite: bool = False,
-                            recursive: bool = False) -> dict[str, Any]:
+                            recursive: bool = False, concurrency: int = 1,
+                            conflict: str | None = None, resume: bool = False) -> dict[str, Any]:
         """Download remote files to an absolute local path and return a transfer operation
         ID. protocol is sftp or legacy scp. Existing local files require overwrite=true.
         Query operation_get to inspect actual completion and integrity evidence.
         """
         return await rpc("transfer.start", {"target": target, "local_path": local_path,
             "remote_path": remote_path, "direction": "download", "protocol": protocol,
-            "overwrite": overwrite, "recursive": recursive})
+            "overwrite": overwrite, "recursive": recursive, "concurrency": concurrency,
+            "conflict": conflict, "resume": resume})
 
     @server.tool(annotations=mutate)
     async def helper_install(target: str) -> dict[str, Any]:
@@ -255,6 +313,21 @@ def create_server(home: str | Path | None = None) -> Any:
         target capabilities explicitly. Installation is required before managed jobs.
         """
         return await rpc("job.install", {"target": target})
+
+    @server.tool(annotations=read_only)
+    async def helper_health(target: str) -> dict[str, Any]:
+        """Query helper protocol, remote free space, log usage and configured storage limits."""
+        return await rpc("job.health", {"target": target})
+
+    @server.tool(annotations=mutate)
+    async def helper_cleanup(target: str, job_ids: list[str], apply: bool = False,
+                             expected_plan: str | None = None) -> dict[str, Any]:
+        """Preview cleanup of explicitly selected finished jobs' logs. apply=true requires
+        the unchanged preview plan ID. Active/unknown jobs are rejected; original job IDs,
+        request identity and exit evidence remain. Deleted output is marked as missing.
+        """
+        return await rpc("job.cleanup", {"target": target, "job_ids": job_ids, "apply": apply,
+                                         "expected_plan": expected_plan})
 
     @server.tool(annotations=mutate)
     async def job_start(target: str, command: str, cwd: str | None = None,

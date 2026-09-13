@@ -43,7 +43,9 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json file upload TARGET ./package.tar.g
 - SFTP 支持逐文件 SHA-256 内容校验；读取完成结果中的 `verification`、`sha256` 与字节数。它不替代部署后的版本或功能检查。
 - 遗留 SCP 首版只支持普通文件，不支持递归，也不执行端到端内容校验，`verification` 为 `not_performed`。需要校验时按目标能力另行取得证据。
 - SCP 要求 SSH、远端 SCP 程序及 POSIX shell；上传发布需要 `ln -T`，显式覆盖需要 `mv -fT`。SFTP 覆盖需要服务端 `posix-rename`。精简设备缺能力时会失败，不应通过删除原文件来自动绕过。
-- 失败可能留下 `.partial` 文件，没有断点续传。先查当前操作状态和实际文件证据，再决定下一步。
+- 失败可能留下 `.partial` 文件；不按 partial 长度续写。SFTP 可用 `--resume --conflict skip-identical` 基于 SHA-256 跳过已完整发布且内容相同的文件，再传剩余文件。这是文件级恢复，不是字节级断点续传。先查询旧操作，确认已结束及部分文件状态再创建恢复步骤。
+
+SFTP 目录可指定 `--recursive --concurrency 3`（1..8 个独立 SFTP 通道，共用一条 SSH 连接）。`--conflict error` 拒绝冲突；`skip-identical` 仅跳过摘要一致的目标；`overwrite` 明确替换。摘要不一致不会因 `--resume` 被自动覆盖。返回 `manifest` 和总体进度，失败清单区分 completed/failed/unknown/not_started；未确认的文件不能算完成。遗留 SCP 不支持这些批量优化选项。
 
 ## 操作记录与日志
 
