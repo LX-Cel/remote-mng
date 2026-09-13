@@ -1,6 +1,6 @@
 # 依赖版本与许可证记录
 
-本记录对应首版 `uv.lock` 和本轮 Windows Python 3.12 虚拟环境中实际安装的包。版本来自锁文件，并逐项与 `importlib.metadata` 读取到的安装版本比较；许可证优先记录 `License-Expression`，没有该字段时记录 `License` 原文。项目链接来自包自己的 `Project-URL` 或 `Home-page` 元数据。
+下表的运行时依赖在 0.3 继续沿用已锁定版本；0.3 新增独立的 `bundle` 构建依赖组（PyInstaller 与其构建依赖），不改变 Python 运行时业务依赖。版本以 `uv.lock` 和 `runtime-info` 为准。许可证优先记录 `License-Expression`，没有该字段时记录 `License` 原文。项目链接来自包自己的 `Project-URL` 或 `Home-page` 元数据。
 
 本轮主任务已经对包含传递依赖的环境运行 `pip-audit`，结果通过。本项目自身采用 [MIT License](../LICENSE)，第三方依赖仍按各自许可证分发。漏洞数据库审计与许可证核查是不同事项；本表不作许可证兼容性、分发义务或法律结论。随依赖包提供的完整许可证、版权和 NOTICE 文件仍是分发时需要核对的材料。
 
@@ -84,3 +84,5 @@ uv run python -c "from importlib.metadata import metadata; m=metadata('asyncssh'
 ```
 
 修改 `pyproject.toml` 或更新锁文件后，应重新核对版本、运行时依赖图、许可证元数据及随包许可文件。本记录是本轮交付快照。
+
+2026-09-13 的 0.3 开发环境再次执行 `uv run pip-audit --progress-spinner off`，可审计依赖未发现已知漏洞；项目自身未发布到 PyPI，审计器明确跳过 remote-mng 本体。该结果不等于源代码安全审查，也不保证未知漏洞不存在。独立包保留依赖元数据与许可证资源，构建及实际包检查见 [发行包验证](distribution-v03.md)。

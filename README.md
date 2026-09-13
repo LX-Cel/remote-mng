@@ -4,22 +4,26 @@
 
 你用自然语言向 Claude Code 描述任务，Claude 通过随包分发的 Skill 调用 `rmg` CLI。工具管理 SSH/Telnet 连接、传包、终端输入、远端长作业和持久任务档案；你通过本地网页查看设备、任务步骤、日志和待确认状态。自然语言规划由 Claude 完成，工具不内置模型。
 
-当前版本 **0.2.0，供个人试用**。本仓库暂为 **私有仓库**，安装需要有权限的 GitHub 账号。当前重点是 Agent 执行成功率和个人状态管理；不包含团队账号、多人调度或团队流程治理。
+当前版本 **0.3.0，供个人试用**。本仓库暂为 **私有仓库**，安装需要有权限的 GitHub 账号。当前重点是 Agent 执行成功率和个人状态管理；不包含团队账号、多人调度或团队流程治理。
 
 ## 安装与开始使用
 
-准备 Python 3.11+、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和已配置 GitHub 认证的 Git。在有权限的账号下克隆，再安装工具和 Skill：
+可选择包含 Python 与依赖的 Windows/Linux 独立发行包，安装入口会完成版本校验、Skill 绑定和本地检查；具体步骤见 [独立包安装与回滚](docs/distribution.md)。WSL 使用 Linux 包，和 Windows 各自安装。
+
+源码安装仍可用：准备 Python 3.11+、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和已配置 GitHub 认证的 Git。在有权限的账号下克隆，再安装工具和 Skill：
 
 ```sh
 git clone https://github.com/LX-Cel/remote-mng.git
 cd remote-mng
 uv tool install .
-rmg skill install
+rmg setup --start-daemon
 ```
 
 也可以用已绑定 GitHub 账号的 SSH 密钥克隆：`git clone git@github.com:LX-Cel/remote-mng.git`。不要把访问令牌写进仓库 URL、脚本或对话。私有仓库的 Release 不能按匿名公开下载地址安装；当前源码也未发布到 PyPI。
 
 如果 uv 提示工具目录不在 PATH，运行 `uv tool update-shell` 后重开终端。安装后的 Skill 默认在 `~/.claude/skills/remote-mng/`，可用于不同业务项目，无需给每个项目添加 `CLAUDE.md` 或配置 MCP。完整安装、升级与完整性保护见 [Claude Skill 接入指南](docs/claude-skill.md)。
+
+上面的安装在普通系统终端进行。部分 Windows Agent 宿主禁止新建独立后台进程；该环境需要安装时预启动管理器，重新开机后可用独立包的一键控制台入口打开。Agent 遇到这个限制会明确报告，不循环重试或绕过宿主限制。
 
 在业务项目中开启新的 Claude Code 会话，直接说：
 
@@ -27,9 +31,9 @@ rmg skill install
 
 也可用 `/remote-mng` 明确调用。首次使用时，Agent 需要你提供真实的目标地址、认证引用、部署脚本和成功判据；示例地址与脚本不能替代业务配置。
 
-**建议从 [个人试用指南](docs/personal-trial.md) 开始。** 本次验证及边界见 [0.2 验证记录](docs/v02-validation.md)；[0.1 Skill 实测](docs/claude-skill-validation.md) 和 [0.1 CLI 实测](docs/claude-code-validation.md) 保留为历史记录。
+**建议从 [个人试用指南](docs/personal-trial.md) 开始。** 本次验证及边界见 [0.3 验证记录](docs/v03-validation.md)；[0.2 验证记录](docs/v02-validation.md)、[0.1 Skill 实测](docs/claude-skill-validation.md) 和 [0.1 CLI 实测](docs/claude-code-validation.md) 保留为历史记录。
 
-## 0.2 提供什么
+## 0.3 提供什么
 
 | 能力 | Agent 怎么使用 | 开发者能看见什么 |
 | --- | --- | --- |
@@ -40,6 +44,12 @@ rmg skill install
 | 连续日志观察 | 用逻辑游标增量读取；轮转后明确报告缺口 | 新日志持续可见，旧日志缺失不会被掩盖 |
 | 个人项目配方 | `project inspect` 校验文件并生成待执行步骤 | 本次要用的产物、脚本及摘要 |
 | 本地控制台 | Agent 执行 `rmg ui` 打开页面 | 设备、任务、会话、操作和日志，以及适用的管理按钮 |
+| 分阶段连接与修复 | 实际连接记录故障阶段、未发送/已发送/未知；配置 patch 先预览并检查 revision | 集中待处理事项、脱敏证据和交给 Agent 的恢复描述 |
+| 同一 Shell 退出码 | 确认 POSIX Shell 后用 `session exec`，保存 cd/export 与请求去重 | 单条退出码、输出区间和 Shell 状态；超时仍可续查 |
+| 跳板、代理与菜单 | 单层 SSH jump、HTTP CONNECT/SOCKS5、有界登录分支 | 登录失败节点、路线和传包独立落点 |
+| helper 存储维护 | 启动前空间检查、每流限额、绝对日志游标、清理预览与计划校验 | 已用/可用空间、日志缺口与删除标记 |
+| 目录传包恢复 | 1..8 通道、文件清单、冲突策略、SHA-256 核对后文件级恢复 | 总体进度、失败文件与已核实完成项 |
+| 独立发行包 | `setup` 一次接入；版本目录、稳定入口、校验升级和兼容回滚 | 安装版本、健康检查与不兼容原因 |
 
 任务显示“步骤完成”表示工具记录的步骤已有完成证据，**不自动推断业务测试通过**。上传完成、命中提示符、脚本退出码分别是不同的证据。断线导致无法确认时显示待确认，并保留最后确认的状态。
 
@@ -103,7 +113,7 @@ rmg project inspect --file ./rmg-project.json --json
 
 ## 环境与安装维护
 
-Windows 原生、WSL、Linux 均需 Python 3.11+；Windows 与 WSL 分别安装，使用各自的路径、凭据环境和本地状态目录。默认状态目录是 `~/.remote-mng`，可通过一致的 `RMG_HOME` 或绝对 `--home` 指定。CLI 通常按需启动本地管理进程。
+独立包自带解释器；源码安装需要 Python 3.11+。Windows 与 WSL 分别安装，使用各自的路径、凭据环境和本地状态目录。默认状态目录是 `~/.remote-mng`，可通过一致的 `RMG_HOME` 或绝对 `--home` 指定。CLI 通常按需启动本地管理进程。
 
 Skill 的入口绑定当前工具环境，保持业务仓库当前目录、UTF-8 输入输出，并处理 Git Bash 的 MSYS 参数转换。本地 Windows 路径使用 `C:/...` 或相对路径，远端路径保持 `/tmp/...` 等 POSIX 形式。Skill 不写入宿主权限白名单或认证配置。
 
@@ -119,19 +129,23 @@ uv run pytest
 
 `python -m remote_mng` 与 `rmg` 是同一入口。MCP 保留为可选适配层，使用 `rmg mcp`；Agent 日常使用以 CLI 和 Skill 为主。维护者操作契约见 [Agent 指南](docs/agent-guide.md)。
 
+新能力的完整参数和边界见 [连接与文件恢复](docs/transports-v03.md)、[同一 Shell 命令](docs/shell-v03.md)、[helper 存储](docs/helper-storage-v03.md)。新任务要求升级到支持存储协议的 helper；`helper install` 原子更新脚本并保留已有作业，旧作业仍可查询。日志清理只处理已选定且已结束的作业，保留 ID 与退出证据。
+
+仍需在真实设备验证公司堡垒机、OTP、精简系统命令和 CTP 前台。当前不支持任意多跳、字节级文件续传或普通交互终端断线重接；文件传完、Shell 退出码 0 和业务测试通过分别判断。
+
 ## 当前边界
 
 - 普通交互会话由本地管理进程持有。进程重启或网络连接丢失后可以读历史，但原终端和应用前台不会自动恢复。
 - 普通 `exec` 在命令执行返回后保存捕获的输出，不提供执行过程的实时流式日志。它不具有远端持久作业保证；长部署和测试用 `job`。
 - durable job 需要 Linux `/proc`、`setsid` 等 helper 探测能力。远端重启不会自动续跑；自行脱离受管进程组的后台程序不能完整跟踪。
 - 本地每个输出流默认保留最多 64 MiB，轮转后继续接收新输出。旧游标落入缺口时返回 `gap` 和 `base_offset`，历史缺失必须纳入结论。该配额可由管理进程启动时的 `RMG_MAX_LOG_BYTES` 调整。
-- **远端 helper 日志和历史没有自动配额、轮转或清理策略**；需要关注远端剩余空间。任务档案也不自动删除历史。
+- 远端 helper 默认对每作业每流保留最多 16 MiB 日志，提供轮转和显式清理；这不是整个设备的总磁盘配额。业务文件与历史任务档案不会自动清理，仍需关注可用空间。
 - SFTP 有 SHA-256 读回校验；遗留 SCP 只传普通文件，无端到端摘要验证或断点续传。Telnet 没有天然文件通道，需要单独配置 SSH 传包入口。
 - 本地网页与 RPC 只监听 loopback，并要求各自的认证。网页是个人状态与管理入口，不是完整的 SSH 终端模拟器，不提供团队账号体系。
 - 目标账户决定远端执行权限；动作限制不是 shell 沙箱。已知凭据脱敏不能识别任意输出中的全部秘密。
 - 实际设备兼容性仍需个人试用验证；回环协议和通用 Linux 验证不代表所有嵌入式板卡及专用前台均已兼容。
 
-首版原理可参考 [离线交互演示](docs/explainer.html)；其中首版界面和能力说明不代表 0.2 的完整功能。历史范围见 [首版需求](docs/requirements-draft.md)，依赖及许可证见 [依赖说明](docs/dependencies.md)。
+查看 [0.2 离线交互演示](docs/explainer-v02.html)，了解 Agent 分工、断线查询、前台去重、个人控制台与 CTP 适配边界；页面明确区分模拟流程和实测截图。历史内容保留在 [0.1 原理演示](docs/explainer.html) 和 [首版需求](docs/requirements-draft.md)，依赖及许可证见 [依赖说明](docs/dependencies.md)。
 
 ## 许可证
 

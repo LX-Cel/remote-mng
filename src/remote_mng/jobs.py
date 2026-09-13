@@ -138,7 +138,16 @@ class JobClient:
             records.append({"job_id": job_id, "state": status.get("state"), "eligible": eligible,
                             "exit_code": status.get("exit_code"), "finished_at": status.get("finished_at"),
                             "logs_deleted": status.get("logs_deleted", False)})
-        plan = {"helper_dir": self.helper_dir, "jobs": records, "scope": "logs_only",
+        # Bind the reviewed endpoint and route/configuration without exposing
+        # credentials or their references in the cleanup response. Manager
+        # targets have already been normalized by Config; canonical JSON also
+        # makes dictionary key order irrelevant for direct JobClient callers.
+        try:
+            target_fingerprint = hashlib.sha256(json.dumps(self.target, sort_keys=True, separators=(",", ":"),
+                                                          ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+        except (TypeError, ValueError) as exc:
+            raise RemoteError("invalid_target", "Cleanup requires a serializable target configuration") from exc
+        plan = {"helper_dir": self.helper_dir, "target_fingerprint": target_fingerprint, "jobs": records, "scope": "logs_only",
                 "kept": ["job_id", "request_identity", "exit_status"]}
         digest = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
         plan.update(plan_id=digest, applied=False)

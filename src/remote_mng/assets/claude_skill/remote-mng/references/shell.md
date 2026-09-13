@@ -6,11 +6,14 @@
 
 ```sh
 bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session open TARGET
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session read SESSION_ID --offset 0
 bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session shell-enable SESSION_ID --confirm-posix --token TOKEN
 bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session exec SESSION_ID "cd /tmp && export TEST_MODE=trial" --request-id set-env --token TOKEN
 bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session exec SESSION_ID 'printf "%s\n" "$TEST_MODE"; pwd' --request-id read-env --token TOKEN
 bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session exec-get SESSION_ID read-env
 ```
+
+`session read` 与 `session exec-get` 是只读查询，不加 `--token`、`--task` 或 `--step-id`；控制令牌用于实际写入、启用、中断和关闭操作。读取返回的 `next_offset` 用于下次增量读取。需要任务记录的执行动作才使用任务和步骤参数，不能把动作参数套在所有子命令上。
 
 每个逻辑命令使用独立 request-id。相同 ID 与相同命令不会重发；不同命令报 request_conflict。观察超时可用同一 `session exec`、同一命令与 request-id 增加 timeout 继续等，也可用 exec-get 只读查询。返回 exit_code、state、output_range 和 next_offset；输出区间可能混有后台程序内容，退出码不能代替业务判据。
 

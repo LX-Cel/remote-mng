@@ -1,6 +1,6 @@
 # 安装工具和 Claude Code Skill
 
-remote-mng 0.2 随 Python 安装包分发个人 Skill。你在业务项目中用自然语言给 Claude 下任务，由它读取 Skill 并调用 CLI；你通过本地网页查看和管理状态。不需要记忆日常 CLI 命令，也不依赖 MCP。
+remote-mng 0.3 随 Python 安装包和独立发行包分发个人 Skill。你在业务项目中用自然语言给 Claude 下任务，由它读取 Skill 并调用 CLI；你通过本地网页查看和管理状态。不需要记忆日常 CLI 命令，也不依赖 MCP。独立包无需准备 Python，见 [安装与升级指南](distribution.md)。
 
 ## 从私有仓库安装
 
@@ -10,16 +10,18 @@ remote-mng 0.2 随 Python 安装包分发个人 Skill。你在业务项目中用
 git clone https://github.com/LX-Cel/remote-mng.git
 cd remote-mng
 uv tool install .
-rmg skill install
+rmg setup --start-daemon
 ```
 
 已经绑定 GitHub 账号的 SSH 密钥也可用于克隆：`git clone git@github.com:LX-Cel/remote-mng.git`。认证交给本地 Git 凭据管理器或 SSH，不要将访问令牌放进 URL、脚本或模型对话。仓库访问权限和本机远端设备认证是两件不同的事。
 
-旧文档中的匿名 Release 下载地址不再适用于私有仓库。已获得 wheel 文件时仍可执行 `uv tool install ./remote_mng-0.2.0-py3-none-any.whl`，再执行 `rmg skill install`；此例不表示已经发布 0.2 Release。当前不通过 PyPI 包名安装。
+旧文档中的匿名 Release 下载地址不再适用于私有仓库。已获得 wheel 文件时可执行 `uv tool install ./remote_mng-0.3.0-py3-none-any.whl`，再在普通系统终端中执行 `rmg setup --start-daemon`。当前不通过 PyPI 包名安装。
 
 也可在自己的 Python 3.11+ 持久虚拟环境中执行 `python -m pip install .`，并在该环境中安装 Skill。不要从一次性的临时环境安装：Skill 入口绑定当前工具的 Python 环境，该环境之后仍需存在。
 
 如果安装器提示工具目录不在 PATH，运行 `uv tool update-shell` 后重开终端。Windows 原生、WSL 和 Linux 各自安装，工具路径、设备认证环境和状态目录不混用。
+
+Windows 的某些 Agent 宿主限制独立后台进程创建，安装阶段应在普通系统终端中启动本地管理器。出现 `process_breakaway_not_permitted` 时，不通过反复 server start、cmd、WMI 或计划任务绕过限制；通过独立包提供的一键控制台入口启动即可。远端受管作业即使在本地管理器关闭后仍可按原 ID 查询，但普通前台会话不会自动恢复。
 
 ## 开始个人试用
 
@@ -115,6 +117,6 @@ rmg skill status --claude-dir /path/to/claude-config --json
 
 ## 源 Skill 与安装后的 Skill
 
-原始资源位于 `src/remote_mng/assets/claude_skill/remote-mng/`。手工复制原始目录时，源包装脚本调用 PATH 中的 `rmg`，因此必须确保 Claude 能找到工具。安装器生成的版本绑定本机 Python 路径，不适合直接复制到另一台机器；换机器后在当地重新安装。
+原始资源位于 `src/remote_mng/assets/claude_skill/remote-mng/`。手工复制原始目录时，源包装脚本调用 PATH 中的 `rmg`，因此必须确保 Claude 能找到工具。安装器生成的版本绑定本机 Python 路径或独立包稳定入口，不适合直接复制到另一台机器；换机器后在当地重新安装。
 
-0.2 实测见 [本版验证记录](v02-validation.md)。[0.1 Skill 实测](claude-skill-validation.md) 是历史验收，不代表新版功能已经按同一条件全部验证。
+0.3 实测见 [本版验证记录](v03-validation.md)。[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 是历史验收，不代表新版功能已经按同一条件全部验证。

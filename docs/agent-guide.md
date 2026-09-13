@@ -1,4 +1,4 @@
-# Agent 操作指南：0.2 个人试用
+# Agent 操作指南：0.3 个人试用
 
 用户用自然语言表达任务，你通过已安装的 remote-mng Skill 调用 CLI。开发者主要通过本地网页查看和管理执行状态；不要求用户记住日常命令。MCP 可选，下面以 CLI 为准。
 
@@ -49,7 +49,7 @@ rmg task get trial-001 --refresh --json
 
 异步提交成功、文件上传成功和业务验证成功分别判断。普通 `exec` 在执行返回后才保存捕获的 stdout/stderr，不提供实时过程日志；长命令、部署及需要断线后重新查询的任务使用 helper 管理的 `job`。在设备尚未安装或需要更新 helper 时安装，不为每次作业重复安装。
 
-首次提交 job 前先检查 helper。只有明确的 `helper_not_installed` 表示该次请求未执行：安装后可用原任务步骤和 job ID 再次发起。网络错误、旧的笼统 helper 错误和 `job_not_found` 都不具有这个含义。`job_id_conflict` 表示已有不同请求占用该 ID，不能接管其结果或取消该旧作业。
+首次提交 job 前先检查 helper。明确的 `helper_not_installed/helper_upgrade_required` 表示该次请求未执行：安装或升级后可用原任务步骤和 job ID 再次发起。网络错误、旧的笼统 helper 错误和 `job_not_found` 都不具有这个含义。`job_id_conflict` 表示已有不同请求占用该 ID，不能接管其结果或取消该旧作业。
 
 CLI 返回 JSON 时同时检查退出码和内容。`0` 可能仅表示异步提交成功；`1` 表示错误、失败或取消；`2` 用于未知结果或参数错误；`124` 是本地等待超时；`130` 是本地中断。结构化错误包含 code、message、details。任何等待退出都不能代替远端状态查询。
 
