@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "name": "个人设备部署与验证",
+  "target": "lab",
+  "steps": [
+    {
+      "id": "upload",
+      "label": "上传构建产物",
+      "kind": "upload",
+      "source": "build/package.tar.gz",
+      "destination": "/tmp/package.tar.gz",
+      "protocol": "sftp",
+      "overwrite": false
+    },
+    {
+      "id": "deploy-and-check",
+      "label": "执行部署和验证脚本",
+      "kind": "job",
+      "script": "scripts/deploy-and-check.sh",
+      "cwd": "/tmp"
+    }
+  ]
+}

@@ -14,6 +14,7 @@ from filelock import FileLock
 
 from .config import home_path
 from .errors import RemoteError
+from . import __version__
 
 
 def runtime_dir(home: Path) -> Path:
@@ -117,5 +118,9 @@ class Client:
 
     async def call(self, method, params=None):
         info = await self.ensure()
+        if method not in {"server.status", "server.stop"} and info.get("version") and info["version"] != __version__:
+            raise RemoteError("daemon_version_mismatch", "The running daemon and installed CLI use different versions",
+                              {"daemon_version": info["version"], "cli_version": __version__,
+                               "advice": "Review active sessions before stopping and restarting the daemon. Remote durable jobs continue; ordinary terminals disconnect."})
         # A failed POST may have reached the daemon. Never retry it automatically.
         return await self.request(info, method, params)

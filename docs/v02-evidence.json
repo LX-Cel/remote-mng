@@ -1,0 +1,112 @@
+{
+  "date": "2026-09-13",
+  "version": "0.2.0",
+  "scope": "loopback SSH/Telnet on WSL Linux; no business device",
+  "automated_tests": {
+    "windows": {
+      "passed": 261,
+      "skipped": 27
+    },
+    "wsl_linux": {
+      "passed": 288,
+      "skipped": 0
+    }
+  },
+  "claude_scenarios": {
+    "workflow": {
+      "tool_calls": 39,
+      "tool_types": {
+        "Skill": 1,
+        "Bash": 28,
+        "Read": 10
+      },
+      "process_exit_code": 0,
+      "is_error": false,
+      "permission_denials": 0,
+      "mcp_servers": 0,
+      "model": "glm-5.3[1m]",
+      "source_sha256": "d9a026b07c0acffa2dfdff46d82c1103fca538e1e4064fa3b588c4288b847ac2"
+    },
+    "durable": {
+      "tool_calls": 20,
+      "tool_types": {
+        "Skill": 1,
+        "Bash": 16,
+        "Read": 3
+      },
+      "process_exit_code": 0,
+      "is_error": false,
+      "permission_denials": 0,
+      "mcp_servers": 0,
+      "model": "glm-5.3[1m]",
+      "source_sha256": "e1c1a3ae546db82e10e6dfcf8376af277ec839e3e799e79d37445787ddb4c62b",
+      "candidate_issue": "Missing helper produced an ambiguous error; fixed before fresh-target trial. Do not count this as first-attempt success."
+    },
+    "recover": {
+      "tool_calls": 9,
+      "tool_types": {
+        "Skill": 1,
+        "Read": 2,
+        "Bash": 6
+      },
+      "process_exit_code": 0,
+      "is_error": false,
+      "permission_denials": 0,
+      "mcp_servers": 0,
+      "model": "glm-5.3[1m]",
+      "source_sha256": "77f65e2f77388c14664546937f9e28b06c687ab3d260e77c011e7424bf6f88c8"
+    },
+    "fresh": {
+      "tool_calls": 19,
+      "tool_types": {
+        "Skill": 1,
+        "Bash": 13,
+        "Read": 5
+      },
+      "process_exit_code": 0,
+      "is_error": false,
+      "permission_denials": 0,
+      "mcp_servers": 0,
+      "model": "glm-5.3[1m]",
+      "source_sha256": "cde3c3b229e248b7d042a137ec62757933ac50020176991f696d19db34391cca"
+    }
+  },
+  "disconnect": {
+    "state_before_stop": "running",
+    "running_when_stopped": true,
+    "active_sessions": 0
+  },
+  "helper_recovery": {
+    "passed": true,
+    "attempt_count": 2,
+    "side_effect_count": 1,
+    "first_code": "helper_not_installed",
+    "task_state": "succeeded"
+  },
+  "browser": {
+    "passed": true,
+    "backend": "installed consumer CLI and real local manager",
+    "browser": "152.0.7977.83",
+    "tool_version": "0.2.0",
+    "target_count": 3,
+    "task_count": 5,
+    "selected_task": {
+      "id": "v02-durable-001",
+      "state": "succeeded",
+      "step_count": 2,
+      "outcome": "steps_completed",
+      "business_verification": "not_inferred"
+    },
+    "checks": {
+      "credential_removed_from_address": true,
+      "overview_summary_only": true,
+      "no_background_remote_probe": true,
+      "explicit_remote_refresh": true,
+      "explicit_log_read": true,
+      "mobile_no_horizontal_overflow": true,
+      "requested_log_marker_observed": true,
+      "no_cancellation_or_execution_requests": true
+    },
+    "errors": []
+  }
+}

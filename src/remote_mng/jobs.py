@@ -68,7 +68,14 @@ class JobClient:
         self._root = _root_expr(self.helper_dir)
 
     async def _raw(self, arguments: list[str], script: str | None = None, timeout: float = 30) -> str:
-        command = f"root={self._root}; sh \"$root/{HELPER_NAME}\" \"$root\" " + " ".join(shlex.quote(arg) for arg in arguments)
+        command = (
+            f"root={self._root}; "
+            f'if test ! -f "$root/{HELPER_NAME}" || test ! -r "$root/{HELPER_NAME}"; then '
+            "printf 'error\\thelper_not_installed\\nmessage\\tNo readable helper; no job command was executed\\n'; "
+            'exit 1; fi; '
+            f'sh "$root/{HELPER_NAME}" "$root" '
+            + " ".join(shlex.quote(arg) for arg in arguments)
+        )
         if script is not None:
             # Pass the complete request inside the exec command too, so this
             # works with Telnet transports which do not expose a stdin stream.
@@ -101,6 +108,10 @@ class JobClient:
             raise RemoteError("helper_protocol_error", "Helper did not confirm protocol and capabilities")
         return {"installed": True, "helper_dir": self.helper_dir, "protocol": 1}
 
+    async def inspect(self) -> dict[str, Any]:
+        """Probe an already installed helper without changing remote files."""
+        return _parse_lines(await self._raw(["probe"], timeout=15))
+
     async def start(self, command: str, cwd: str | None = None, env: dict[str, str] | None = None, job_id: str | None = None) -> dict[str, Any]:
         job_id = _job_id(job_id if job_id is not None else uuid.uuid4().hex)
         if not isinstance(command, str) or not command.strip() or "\x00" in command:
@@ -126,7 +137,12 @@ class JobClient:
             # The caller must retain this id after lost acknowledgement. A new
             # id would permit duplicate execution and is never retried here.
             details = dict(getattr(exc, "details", None) or {})
-            details.update(job_id=job_id, recovery="Query this job id before submitting new work; the remote command may have started")
+            details.update(job_id=job_id, recovery=(
+                "Install the helper, then repeat the same job and step IDs; no job command was executed"
+                if exc.code == "helper_not_installed" else
+                "Choose a new ID for different work; this ID belongs to another request"
+                if exc.code == "job_id_conflict" else
+                "Query this job id before submitting new work; the remote command may have started"))
             raise RemoteError(exc.code, str(exc), details=details) from exc
         if result.get("job_id") != job_id or "state" not in result:
             raise RemoteError("helper_protocol_error", "Helper did not confirm submission state", details={"job_id": job_id})

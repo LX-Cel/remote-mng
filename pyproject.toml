@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "remote-mng"
-version = "0.1.0"
-description = "Shared SSH/Telnet sessions, file transfer and durable remote jobs for humans and agents"
+version = "0.2.0"
+description = "Agent-first SSH/Telnet operations, durable jobs and a personal status console"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

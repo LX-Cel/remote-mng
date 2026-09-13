@@ -1,6 +1,6 @@
 # 持续交互、输出观察与控制权
 
-先将 `<SKILL_BASE_DIR>`、`TARGET`、路径和返回值占位符替换成实际值。Agent 默认通过 CLI 的 `open/write/read/wait` 操作，不进入需要真实 TTY 的 `session attach`。
+先将 `<SKILL_BASE_DIR>`、`TARGET`、路径和返回值占位符替换成实际值。有明确输出判据的操作优先使用 `session step`，把稳定请求 ID、输入和等待交给工具记录；示例见 [个人任务](tasks.md)。需要单独发送控制字符或读取时继续用 `write/read/wait`，不进入需要真实 TTY 的 `session attach`。
 
 ## 打开会话与交互配置
 

@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 
 from .errors import RemoteError
 
@@ -14,6 +15,7 @@ class Store:
         self.home = home
         self.logs_dir = home / "logs"
         self.logs_dir.mkdir(mode=0o700, exist_ok=True)
+        self._logs = {}
         self.db = sqlite3.connect(home / "state.sqlite3")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, kind TEXT, data TEXT)")
@@ -56,32 +58,85 @@ class Store:
             raise RemoteError("invalid_stream", "Stream must be stdout or stderr")
         return self.logs_dir / f"{id}.{stream}.log"
 
+    def _log(self, id, stream):
+        legacy = self.path(id, stream)
+        key = (id, stream)
+        if key not in self._logs:
+            # The filename commits the logical offset with the retained bytes.
+            # If shutdown interrupted removal of the older file, the newest
+            # complete generation wins. Temporary files are never readable logs.
+            generations = []
+            for candidate in self.logs_dir.glob(f"{id}.{stream}.*.log"):
+                suffix = candidate.name[len(f"{id}.{stream}."):-4]
+                if suffix.isdigit():
+                    generations.append((int(suffix), candidate))
+            if generations:
+                base, path = max(generations)
+                for _, old in generations:
+                    if old != path:
+                        old.unlink(missing_ok=True)
+                legacy.unlink(missing_ok=True)
+            else:
+                base, path = 0, legacy
+            self._logs[key] = (base, path)
+        return self._logs[key]
+
     def append(self, id, data, stream="stdout"):
-        path = self.path(id, stream)
+        base, path = self._log(id, stream)
         payload = data.encode("utf-8") if isinstance(data, str) else data
-        max_bytes = int(os.environ.get("RMG_MAX_LOG_BYTES", 64 * 1024 * 1024))
-        room = max(0, max_bytes - self.size(id, stream))
-        with path.open("ab") as out:
-            out.write(payload[:room])
-        if len(payload) > room:
+        max_bytes = max(4, int(os.environ.get("RMG_MAX_LOG_BYTES", 64 * 1024 * 1024)))
+        retained = path.stat().st_size if path.exists() else 0
+        end = base + retained + len(payload)
+        if retained + len(payload) <= max_bytes:
+            with path.open("ab") as out:
+                out.write(payload)
+        else:
+            # Keep half the capacity when rotating, amortizing a large copy
+            # across many small terminal reads instead of rewriting it per read.
+            keep = max(4, max_bytes // 2)
+            tail = payload[-keep:]
+            if len(tail) < keep and path.exists():
+                with path.open("rb") as src:
+                    src.seek(max(0, retained - (keep - len(tail))))
+                    tail = src.read() + tail
+            # Retention must not begin in the middle of a UTF-8 code point.
+            skip = 0
+            while skip < len(tail) and 0x80 <= tail[skip] <= 0xBF:
+                skip += 1
+            tail = tail[skip:]
+            next_base = end - len(tail)
+            next_path = self.logs_dir / f"{id}.{stream}.{next_base}.log"
+            temporary = self.logs_dir / f"{id}.{stream}.{uuid.uuid4().hex}.tmp"
+            try:
+                with temporary.open("wb") as out:
+                    out.write(tail)
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.replace(temporary, next_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            self._logs[(id, stream)] = (next_base, next_path)
+            path.unlink(missing_ok=True)
             self.update(id, log_truncated=True)
-        return path.stat().st_size
+        return end
 
     def size(self, id, stream="stdout"):
-        path = self.path(id, stream)
-        return path.stat().st_size if path.exists() else 0
+        base, path = self._log(id, stream)
+        return base + (path.stat().st_size if path.exists() else 0)
 
     def read(self, id, stream="stdout", offset=0, limit=65536):
         if not isinstance(offset, int) or offset < 0 or not isinstance(limit, int) or not 1 <= limit <= 262144:
             raise RemoteError("invalid_range", "offset must be >= 0; limit must be 1..262144 bytes")
-        path = self.path(id, stream)
+        base, path = self._log(id, stream)
         size = self.size(id, stream)
         if offset > size:
             raise RemoteError("invalid_offset", "Offset is past the current output", {"size": size})
+        requested_offset = offset
+        offset = max(offset, base)
         data = b""
         if path.exists():
             with path.open("rb") as src:
-                src.seek(offset)
+                src.seek(offset - base)
                 data = src.read(limit)
                 # Logs are UTF-8 text. Never split a code point across cursor pages.
                 decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -104,7 +159,9 @@ class Store:
         record = self.get(id)
         return {"id": id, "stream": stream, "data": data.decode("utf-8", errors="replace"),
                 "data_base64": base64.b64encode(data).decode(), "offset": offset, "next_offset": end,
-                "eof": end >= size, "truncated": end < size, "log_truncated": record.get("log_truncated", False), "snapshot_size": size,
+                "requested_offset": requested_offset, "base_offset": base, "gap": requested_offset < base,
+                "eof": end >= size, "truncated": end < size,
+                "log_truncated": base > 0 or record.get("log_truncated", False), "snapshot_size": size,
                 "state": record["state"]}
 
     def close(self):

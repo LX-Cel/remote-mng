@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import base64
+import hashlib
+import json
 import secrets
 import shlex
 import time
@@ -28,6 +30,7 @@ class Session:
         self.changed = asyncio.Event()
         self.pump = None
         self.profile = profile or {}
+        self.leave_task = None
 
     def authorize(self, token):
         if not token or not self.token or not secrets.compare_digest(str(token), self.token):
@@ -42,6 +45,9 @@ class Manager:
         self.tasks = set()
         self.closing = False
         self.opening = 0
+        from .taskbook import TaskBook
+        self.taskbook = TaskBook(self)
+        self.step_tasks = {}
 
     def launch(self, coro):
         task = asyncio.create_task(coro)
@@ -53,6 +59,10 @@ class Manager:
         methods = {
             "target.list": self.target_list, "target.put": self.config.put,
             "target.remove": self.config.remove, "target.check": self.target_check,
+            "target.inspect": self.target_inspect,
+            "task.create": self.taskbook.create, "task.list": self.taskbook.list,
+            "task.get": self.taskbook.get, "task.invoke": self.taskbook.invoke,
+            "task.seal": self.taskbook.seal, "task.cancel": self.taskbook.cancel,
             "profile.list": lambda: self.config.read().get("profiles", {}),
             "exec.start": self.exec_start, "operation.get": self.store.get,
             "operation.list": self.operation_list, "operation.logs": self.store.read,
@@ -62,6 +72,7 @@ class Manager:
             "session.claim": self.session_claim, "session.release": self.session_release,
             "session.close": self.session_close, "session.resize": self.session_resize,
             "session.leave": self.session_leave,
+            "session.step": self.session_step, "session.step.get": self.session_step_get,
             "transfer.start": self.transfer_start,
             "job.install": self.job_install, "job.start": self.job_start,
             "job.status": self.job_status, "job.list": self.job_list,
@@ -79,6 +90,10 @@ class Manager:
 
     def target_list(self):
         return [{"name": name, "config": config} for name, config in self.config.read().get("targets", {}).items()]
+
+    async def target_inspect(self, target, directory=None):
+        from .diagnostics import inspect_target
+        return await inspect_target(self, target, directory)
 
     async def target_check(self, target):
         cfg = self.config.target(target, "check")
@@ -98,7 +113,7 @@ class Manager:
                 "helper_installed": "not_checked"}
 
     def operation_list(self):
-        return [r for r in self.store.list() if r["kind"] != "session"]
+        return [r for r in self.store.list() if r["kind"] in {"exec", "transfer", "job_reference", "session_step"}]
 
     def new_operation(self, kind, target, **meta):
         id = uuid.uuid4().hex
@@ -242,35 +257,85 @@ class Manager:
 
     async def session_write(self, id, data, control_token, newline=False, sensitive=False):
         session = self.live_session(id)
-        if not isinstance(data, str) or len(data) > 1048576:
-            raise RemoteError("invalid_input", "Session input must be text, at most 1 MiB")
+        self.validate_session_input(data, newline, sensitive)
         async with session.lock:
             self.live_session(id)
             session.authorize(control_token)
-            if sensitive:
-                session.redactor.add(data)
-            before = self.store.size(id)
-            await session.terminal.write(data + ("\n" if newline else ""))
+            before = await self._session_send(session, data, newline, sensitive)
         return {"id": id, "written": True, "cursor": before, "next_offset": self.store.size(id),
                 "outcome": "input_sent"}
 
-    async def session_wait(self, id, pattern, offset=0, timeout=30, regex=False):
-        self.session_get(id)
+    @staticmethod
+    def validate_session_input(data, newline, sensitive):
+        if not isinstance(data, str) or len(data.encode("utf-8")) > 1048576:
+            raise RemoteError("invalid_input", "Session input must be text, at most 1 MiB in UTF-8")
+        if not isinstance(newline, bool) or not isinstance(sensitive, bool):
+            raise RemoteError("invalid_input", "newline and sensitive must be booleans")
+
+    async def _session_send(self, session, data, newline, sensitive):
+        """Send under the session lock; invalidate observations before input."""
+        if sensitive:
+            session.redactor.add(data)
+        record = self.store.get(session.id)
+        before = self.store.size(session.id)
+        self.store.update(session.id, state_label="unknown",
+                          input_generation=record.get("input_generation", 0) + 1,
+                          last_input_cursor=before)
+        await session.terminal.write(data + ("\n" if newline else ""))
+        return before
+
+    def _observe_outer_prompt(self, id, window, cursor):
+        """Recognize an explicitly configured outer prompt in fresh output.
+
+        This also protects a manual write/observe/leave workflow. Historical
+        prompts from before the newest input cannot establish the current phase.
+        """
+        session = self.sessions.get(id)
+        pattern = session.profile.get("exit_prompt") if session else None
+        if not pattern or not window:
+            return
+        try:
+            match = regex.search(f"(?:{pattern})\\s*\\Z", window, timeout=0.05)
+        except (regex.error, TimeoutError):
+            return
+        if not match:
+            return
+        record = self.store.get(id)
+        match_start = cursor - len(window.encode("utf-8")) + len(window[:match.start()].encode("utf-8"))
+        if match_start >= record.get("last_input_cursor", 0):
+            if record.get("state_label") != "outer_prompt_matched" or record.get("phase_cursor") != cursor:
+                self.store.update(id, state_label="outer_prompt_matched", phase_cursor=cursor,
+                                  phase_observed_at=time.time())
+
+    @staticmethod
+    def compile_session_pattern(pattern, timeout, is_regex):
         if not isinstance(pattern, str) or not pattern or len(pattern) > 2048:
             raise RemoteError("invalid_pattern", "Pattern must be 1..2048 characters")
         if not isinstance(timeout, (int, float)) or not 0 <= timeout <= 60:
             raise RemoteError("invalid_timeout", "Observation timeout must be 0..60 seconds; repeat for longer waits")
+        if not isinstance(is_regex, bool):
+            raise RemoteError("invalid_pattern", "regex must be a boolean")
         import regex as engine
         try:
-            compiled = engine.compile(pattern if regex else engine.escape(pattern))
+            return engine.compile(pattern if is_regex else engine.escape(pattern))
         except engine.error as exc:
             raise RemoteError("invalid_pattern", str(exc)) from exc
+
+    async def session_wait(self, id, pattern, offset=0, timeout=30, regex=False):
+        self.session_get(id)
+        compiled = self.compile_session_pattern(pattern, timeout, regex)
         deadline = asyncio.get_running_loop().time() + timeout
         cursor, window, captured = offset, "", ""
         discarded = False
+        gap = False
         while True:
             chunk = self.session_read(id, offset=cursor, limit=65536)
             cursor = chunk["next_offset"]
+            if chunk["gap"]:
+                # Never manufacture a match by joining opposite sides of a
+                # retention gap. The returned capture has the same guarantee.
+                window = captured = ""
+                gap = discarded = True
             window = (window + chunk["data"])[-65536:]
             captured += chunk["data"]
             if len(captured) > 65536:
@@ -280,17 +345,147 @@ class Manager:
                 match = compiled.search(window, timeout=0.05)
             except TimeoutError as exc:
                 raise RemoteError("pattern_timeout", "Pattern is too expensive to evaluate") from exc
+            if chunk["eof"]:
+                self._observe_outer_prompt(id, window, cursor)
             if match:
                 return {"id": id, "matched": True, "match": match.group(), "data": captured,
                         "next_offset": cursor, "truncated": discarded, "log_truncated": chunk["log_truncated"],
+                        "base_offset": chunk["base_offset"], "gap": gap,
                         "state": chunk["state"], "outcome": "output_matched"}
             if not chunk["eof"]:
                 continue
             if chunk["state"] != "open" or asyncio.get_running_loop().time() >= deadline:
                 return {"id": id, "matched": False, "data": captured, "next_offset": cursor,
                         "truncated": discarded, "log_truncated": chunk["log_truncated"],
+                        "base_offset": chunk["base_offset"], "gap": gap,
                         "state": chunk["state"], "outcome": "unknown"}
             await asyncio.sleep(min(0.05, max(0, deadline - asyncio.get_running_loop().time())))
+
+    @staticmethod
+    def step_record_id(id, request_id):
+        if not isinstance(request_id, str) or not regex.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", request_id):
+            raise RemoteError("invalid_request_id", "request_id must be 1..128 ASCII letters, digits, '.', '_', ':' or '-'")
+        return hashlib.sha256(f"session_step\0{id}\0{request_id}".encode()).hexdigest()
+
+    def session_step_get(self, id, request_id):
+        self.session_get(id)
+        record = self.store.get(self.step_record_id(id, request_id))
+        if record["kind"] != "session_step" or record["session_id"] != id:
+            raise RemoteError("not_a_session_step", "This record is not a step for the given session")
+        return record
+
+    async def session_step(self, id, data, control_token, request_id, pattern,
+                           timeout=30, regex=False, newline=True, sensitive=False):
+        """Persist send intent, then serialize one input and its observation.
+
+        Retries of an existing request only observe; neither a caller's lost
+        response nor a restarted manager grants permission to repeat input.
+        Matching output is evidence of a pattern, not remote exactly-once work.
+        """
+        self.validate_session_input(data, newline, sensitive)
+        self.compile_session_pattern(pattern, timeout, regex)
+        session_record = self.session_get(id)
+        operation_id = self.step_record_id(id, request_id)
+        fingerprint = hashlib.sha256(json.dumps(
+            [data, pattern, regex, newline, sensitive], ensure_ascii=False, separators=(",", ":")
+        ).encode()).hexdigest()
+        try:
+            record = self.store.get(operation_id)
+        except RemoteError as exc:
+            if exc.code != "not_found":
+                raise
+            record = None
+        if record:
+            if record["request_fingerprint"] != fingerprint:
+                raise RemoteError("request_conflict", "This request_id was already used with different input or expectations",
+                                  {"session_id": id, "request_id": request_id, "operation_id": operation_id})
+            if operation_id in self.step_tasks:
+                return await asyncio.shield(self.step_tasks[operation_id])
+            if record["state"] != "unknown" or id not in self.sessions:
+                return record
+            if record.get("input_generation") != session_record.get("input_generation", 0):
+                return self.store.update(operation_id, reason="subsequent_input",
+                                         advice="Later input was sent; inspect the session without replaying this request")
+            send = False
+        else:
+            session = self.live_session(id)
+            session.authorize(control_token)
+            if sensitive:
+                session.redactor.add(data)
+            record = self.store.put({
+                "id": operation_id, "kind": "session_step", "session_id": id,
+                "target": session_record["target"], "request_id": request_id,
+                "request_fingerprint": fingerprint, "state": "pending", "phase": "queued",
+                "input": "[REDACTED]" if sensitive else session.redactor.clean(data),
+                "pattern": session.redactor.clean(pattern), "regex": regex, "newline": newline,
+                "sensitive": sensitive, "written": False, "outcome": "not_sent",
+                "advice": "Query this request_id before deciding whether to send different input",
+            })
+            send = True
+        session = self.live_session(id)
+        session.authorize(control_token)
+        task = self.launch(self._run_session_step(session, record, data, control_token, pattern,
+                                                   timeout, regex, newline, sensitive, send))
+        self.step_tasks[operation_id] = task
+        task.add_done_callback(lambda completed: self.step_tasks.pop(operation_id, None))
+        return await asyncio.shield(task)
+
+    async def _run_session_step(self, session, record, data, token, pattern,
+                                timeout, is_regex, newline, sensitive, send):
+        operation_id = record["id"]
+        attempted = not send
+        try:
+            async with session.lock:
+                self.live_session(session.id)
+                session.authorize(token)
+                current = self.store.get(session.id)
+                if send:
+                    cursor = self.store.size(session.id)
+                    # This commit precedes the actual write. A crash here is
+                    # uncertain by design, rather than a reason to replay.
+                    record = self.store.update(operation_id, state="running", phase="sending",
+                                              cursor=cursor, next_offset=cursor,
+                                              input_generation=current.get("input_generation", 0) + 1,
+                                              outcome="unknown", started_at=time.time())
+                    attempted = True
+                    await self._session_send(session, data, newline, sensitive)
+                    record = self.store.update(operation_id, written=True, phase="observing")
+                elif record.get("input_generation") != current.get("input_generation", 0):
+                    return self.store.update(operation_id, reason="subsequent_input", outcome="unknown")
+                else:
+                    self.store.update(operation_id, state="running", phase="observing")
+                # Re-read from the original cursor on another bounded wait.
+                # This retains partial-pattern context across calls, while
+                # session_wait explicitly discards context across log gaps.
+                observed = await self.session_wait(session.id, pattern, offset=record["cursor"],
+                                                   timeout=timeout, regex=is_regex)
+                return self.store.update(operation_id,
+                    state="succeeded" if observed["matched"] else "unknown",
+                    phase="matched" if observed["matched"] else "unconfirmed",
+                    observation=observed, next_offset=observed["next_offset"],
+                    outcome=observed["outcome"], reason=None,
+                    finished_at=time.time() if observed["matched"] else None,
+                    advice="Output matched; check business success criteria" if observed["matched"] else
+                           "Query or repeat this same request_id to observe; do not replay input with a new ID")
+        except asyncio.CancelledError:
+            self.store.update(operation_id, state="unknown", phase="unconfirmed", outcome="unknown",
+                              reason="local_observation_stopped")
+            raise
+        except Exception as exc:
+            error = exc.as_dict() if isinstance(exc, RemoteError) else {"code": "session_step_error", "message": str(exc)}
+            def clean(value):
+                if isinstance(value, str):
+                    return session.redactor.clean(value)
+                if isinstance(value, dict):
+                    return {key: clean(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [clean(item) for item in value]
+                return value
+            error = clean(error)
+            return self.store.update(operation_id, state="unknown" if attempted else "failed",
+                                     phase="unconfirmed" if attempted else "not_sent",
+                                     outcome="unknown" if attempted else "not_sent", error=error,
+                                     reason="input_or_observation_error")
 
     async def session_claim(self, id, force=False):
         session = self.live_session(id)
@@ -339,19 +534,46 @@ class Manager:
 
     async def session_leave(self, id, control_token):
         session = self.live_session(id)
+        session.authorize(control_token)
         if not session.profile.get("exit"):
             raise RemoteError("profile_exit_missing", "No exit command is configured; use session.write explicitly")
-        sent = await self.session_write(id, session.profile["exit"], control_token, newline=True)
-        result = {"id": id, "outcome": "input_sent", "cursor": sent["cursor"]}
-        state_label = "unknown"
-        if session.profile.get("exit_prompt"):
-            observed = await self.session_wait(id, session.profile["exit_prompt"], offset=sent["cursor"],
-                                               timeout=session.profile.get("timeout", 15), regex=True)
-            result["observation"] = observed
-            if observed["matched"]:
-                state_label = "outer_prompt_matched"
-        self.store.update(id, state_label=state_label)
-        return result
+        if not session.leave_task or session.leave_task.done():
+            session.leave_task = self.launch(self._session_leave(session, control_token))
+        # A client's lost response must not cancel the observation and cause a
+        # second exit to be sent into the newly exposed outer shell.
+        return await asyncio.shield(session.leave_task)
+
+    async def _session_leave(self, session, control_token):
+        id = session.id
+        async with session.lock:
+            self.live_session(id)
+            session.authorize(control_token)
+            record = self.store.get(id)
+            if record.get("state_label") == "outer_prompt_matched":
+                return {"id": id, "written": False, "outcome": "already_left", "cursor": self.store.size(id)}
+            previous = record.get("last_leave", {})
+            repeated = previous.get("input_generation") == record.get("input_generation", 0)
+            if repeated:
+                cursor = previous["cursor"]
+            else:
+                cursor = self.store.size(id)
+                # Remember intent before sending so a failed write is not an
+                # invitation to blindly send the same exit command again.
+                self.store.update(id, last_leave={"cursor": cursor,
+                                  "input_generation": record.get("input_generation", 0) + 1})
+                await self._session_send(session, session.profile["exit"], True, False)
+            result = {"id": id, "written": not repeated,
+                      "outcome": "unknown" if repeated else "input_sent", "cursor": cursor}
+            state_label = "unknown"
+            if session.profile.get("exit_prompt"):
+                observed = await self.session_wait(id, session.profile["exit_prompt"], offset=cursor,
+                                                   timeout=session.profile.get("timeout", 15), regex=True)
+                result["observation"] = observed
+                if observed["matched"]:
+                    state_label = "outer_prompt_matched"
+                    result["outcome"] = "outer_prompt_matched"
+            self.store.update(id, state_label=state_label)
+            return result
 
     def jobs(self, target):
         from .jobs import JobClient
@@ -366,7 +588,7 @@ class Manager:
         ref = self.new_operation("job_reference", target, job_id=job_id)
         try:
             result = await client.start(command, cwd=cwd, env=env, job_id=job_id)
-            self.store.update(ref["id"], state="succeeded", result=result)
+            self.store.update(ref["id"], state=result.get("state", "unknown"), result=result, observed_at=time.time())
             return {"target": target, "operation_id": ref["id"], **result}
         except Exception as exc:
             error = exc.as_dict() if isinstance(exc, RemoteError) else {"code": "job_error", "message": str(exc)}
@@ -376,7 +598,11 @@ class Manager:
                                "advice": "Query this job ID before deciding whether to submit again"}) from exc
 
     async def job_status(self, target, job_id):
-        return {"target": target, **await self.jobs(target).status(job_id)}
+        result = {"target": target, **await self.jobs(target).status(job_id)}
+        for record in self.store.list("job_reference"):
+            if record.get("target") == target and record.get("job_id") == job_id:
+                self.store.update(record["id"], state=result.get("state", "unknown"), result=result, observed_at=time.time())
+        return result
 
     async def job_list(self, target):
         return await self.jobs(target).list()

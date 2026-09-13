@@ -6,10 +6,17 @@
 
 受管作业要求目标具有 POSIX shell、Linux `/proc`（含 boot ID 与进程身份信息）、`setsid` 及常见 Shell 工具。辅助程序不依赖远端 Python/Node，不新增监听端口，在用户目录按需执行。Telnet 目标还须已确认 `shell: "posix"`。
 
-需要启用此能力且安装已在当前任务授权范围内时执行；已安装的目标可直接复用：
+**首次向一个目标提交作业前，先检查辅助程序；不要通过 `job start` 探测是否已安装。**
+
+```sh
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target inspect TARGET
+```
+
+检查 `checks` 中 `helper` 和 `job_dependencies` 的 `state` 是否为 `pass`。`warning`、`not_checked` 或连接未确认都不是通过。若缺少辅助程序、本次工作确实需要持久作业，且安装已在当前任务授权范围内，完成安装后再次检查；已安装且检查通过的目标直接复用：
 
 ```sh
 bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json helper install TARGET
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target inspect TARGET
 ```
 
 安装位置由目标 `helper_dir` 决定，默认 `~/.local/share/remote-mng`，选择私有、可写的持久存储目录。安装会检查目标能力并原子替换辅助脚本，保留现有作业记录。不要为错误结果自动安装系统包或更改服务器服务策略。
@@ -51,6 +58,15 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json operation list
 ```
 
 只有核对正确目标与记录后才能继续跟踪。若出现 `job_not_found`，先检查目标、运行环境、状态目录与远端记录是否仍在；响应丢失或记录不见不能证明原命令从未执行。查询不会自动恢复或重放未知任务。
+
+按 `error.code`（或任务步骤的 `error.code`）区分恢复路径：
+
+- `helper_not_installed`：工具确认辅助程序缺失、此次作业命令未执行。按上面的授权范围安装并复查后，可以用**相同** task ID、step ID、job ID 和参数继续；这是工具允许的确定拒绝恢复分支。
+- `job_id_conflict`：该 ID 已对应不同请求。不能把旧作业的结果当成本次成功，也不能接管或取消旧作业。先核对记录；确属新的工作时使用新的步骤与作业 ID，保留冲突记录。
+- `unknown`、超时、断线或响应丢失：只能用原 ID 查询状态和日志，不能反复执行原 `job start` 或 `task invoke`。同一 step 的重复返回可能只是原来的未知记录，并不是新尝试。
+- `job_not_found`：仅表示查询不到记录，不等于未执行；按上文检查目标与存储，不能套用 `helper_not_installed` 的重试规则。
+
+查询后仍无法取得执行或未执行的证据时，报告任务暂时阻塞、已知 ID、最后确认状态及缺少的证据，停止重复提交。不要通过换 ID、改 step ID 或循环原命令来“恢复”结果未知的作业。
 
 `job start --wait --wait-timeout SECONDS` 可有限等待，但 CLI 等待超时或 Ctrl-C 只停止本地等待。需要继续时查询已有作业，不重复提交。
 

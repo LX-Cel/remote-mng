@@ -88,10 +88,10 @@ def test_update_replaces_only_unchanged_owned_files(claude_dir, source, monkeypa
     source["SKILL.md"] += b"Updated package instructions.\n"
     del source["references/guide.md"]
     source["references/new-guide.md"] = b"New reference.\n"
-    monkeypatch.setattr(installer, "__version__", "0.2.0")
+    monkeypatch.setattr(installer, "__version__", "99.0.0")
     result = installer.install_skill()
     assert result["action"] == "updated"
-    assert result["package_version"] == "0.2.0"
+    assert result["package_version"] == "99.0.0"
     assert result["integrity"] == "verified"
     assert (skill / "SKILL.md").read_bytes() == source["SKILL.md"]
     assert not (skill / "references/guide.md").exists()

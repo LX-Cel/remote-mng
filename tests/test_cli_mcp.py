@@ -87,10 +87,10 @@ def test_write_without_control_token_never_sends_input(fake_client, monkeypatch,
     assert "control" in json.loads(capsys.readouterr().out)["error"]["message"].lower()
 
 
-def test_wait_requires_explicit_cursor():
-    with pytest.raises(SystemExit) as error:
-        cli.build_parser().parse_args(["session", "wait", "s", "ready>"])
-    assert error.value.code == 2
+def test_wait_requires_explicit_cursor(fake_client, capsys):
+    assert cli.main(["session", "wait", "s", "ready>", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "invalid_arguments"
+    assert fake_client.calls == []
 
 
 def test_wait_unknown_returns_distinct_code_without_replaying(fake_client, capsys):

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>remote-mng · 本地控制台</title>
+  <link rel="stylesheet" href="/ui/style.css">
+  <script src="/ui/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">r</span><div><h1>remote-mng</h1><p>个人远程开发控制台</p></div></div>
+      <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-state">正在连接本地管理器</span><button id="logout" class="quiet">锁定</button></div>
+    </header>
+    <div id="notice" role="status" class="notice" hidden></div>
+    <main>
+      <section class="intro"><div><span class="eyebrow">WORKSPACE OVERVIEW</span><h2>让每一次执行都有迹可循。</h2><p>Agent 负责执行，你在这里查看设备、任务和实际输出。</p></div><div class="last-update"><span id="server-version"></span><span id="last-update">尚未读取状态</span></div></section>
+      <section class="metrics" aria-label="状态概览">
+        <div><span>已配置设备</span><strong id="count-targets">—</strong><small>按需检查远端能力</small></div>
+        <div><span>进行中的任务</span><strong id="count-running">—</strong><small>最近 100 条任务中的状态</small></div>
+        <div><span>需要关注</span><strong id="count-attention">—</strong><small>最近任务中失败或待确认的状态</small></div>
+        <div><span>交互会话</span><strong id="count-sessions">—</strong><small>连接状态不等于任务状态</small></div>
+      </section>
+      <section class="panel"><div class="panel-heading"><div><h2>设备</h2><p>展示最近一次检查；不会在后台自动探测设备。</p></div></div><div id="targets" class="target-grid"></div></section>
+      <div class="work-grid">
+        <section class="panel task-panel"><div class="panel-heading"><div><h2>任务</h2><p id="task-list-scope">选择任务，查看步骤与恢复依据。</p></div><button id="refresh-overview" class="quiet">刷新列表</button></div><div id="tasks" class="task-list"></div></section>
+        <section class="panel detail-panel"><div class="panel-heading"><div><h2 id="task-title">任务详情</h2><p id="task-subtitle">任务 ID 会跨 Agent 会话保留。</p></div><div class="actions"><button id="refresh-task" hidden>查询远端状态</button><button id="cancel-task" class="danger" hidden>取消受管任务</button></div></div><div id="task-detail" class="detail-content"><p class="empty">选择左侧任务查看执行时间线。</p></div></section>
+      </div>
+      <section class="panel"><div class="panel-heading"><div><h2>活动与会话</h2><p>提交成功只代表已受理；长任务结果以远端查询为准。</p><p id="activity-scope"></p></div></div><div class="activity-grid"><div><h3>操作记录</h3><div id="operations"></div></div><div><h3>终端会话</h3><div id="sessions"></div></div></div></section>
+      <section class="panel logs-panel"><div class="panel-heading"><div><h2>输出观察</h2><p id="log-description">从步骤、操作或会话中选择“查看日志”。</p></div><div class="actions"><label for="log-stream">输出流</label><select id="log-stream"><option value="stdout">stdout</option><option value="stderr">stderr</option></select><button id="load-log" disabled>读取下一页</button><label class="checkbox"><input type="checkbox" id="follow-log">持续读取</label></div></div><p id="log-note" class="log-note">日志只用于观察，不会向终端发送输入。</p><pre id="log-output" tabindex="0" aria-label="终端或任务日志">尚未选择输出。</pre></section>
+    </main>
+    <footer><span>仅本机访问 · CLI 与控制台共享实际执行记录</span><span>remote-mng</span></footer>
+  </div>
+</body>
+</html>

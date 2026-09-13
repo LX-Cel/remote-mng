@@ -21,6 +21,7 @@ from typing import Any
 
 from .client import Client
 from .errors import RemoteError
+from . import __version__
 
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled", "unknown"}
@@ -32,6 +33,15 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", default=argparse.SUPPRESS, help="Local state/config directory")
     parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                         help="Output machine-readable JSON")
+    parser.add_argument("--task", default=argparse.SUPPRESS, help="Record this action in an existing personal task")
+    parser.add_argument("--step-id", default=argparse.SUPPRESS, help="Stable request id within the task; reuse it after an uncertain response")
+    parser.add_argument("--label", default=argparse.SUPPRESS, help="Short label for the tracked task step")
+
+
+class ArgumentErrorParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise RemoteError("invalid_arguments", "Invalid or missing command arguments",
+                          {"usage": self.format_usage().strip(), "advice": "Read the command's --help or rmg schema; no action was executed."})
 
 
 def _sub(parent: Any, name: str, help_text: str) -> argparse.ArgumentParser:
@@ -64,11 +74,41 @@ def _wait_option(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rmg", description="Remote sessions, transfers and durable jobs for agents. Use --json for structured results.")
+    parser = ArgumentErrorParser(prog="rmg", description="Remote sessions, transfers and durable jobs for agents. Use --json for structured results.")
     _common(parser)
-    parser.set_defaults(home=None, json=False)
-    parser.add_argument("--version", action="version", version="remote-mng 0.1.0")
+    parser.set_defaults(home=None, json=False, task=None, step_id=None, label=None)
+    parser.add_argument("--version", action="version", version=f"remote-mng {__version__}")
     groups = parser.add_subparsers(dest="group", required=True)
+
+    _sub(groups, "schema", "Describe available CLI commands and machine-result conventions without connecting")
+    doctor = _sub(groups, "doctor", "Inspect local setup and optionally probe one target without deploying or installing")
+    doctor.add_argument("target", nargs="?")
+    doctor.add_argument("--directory", help="Existing remote directory to check for write access")
+    doctor.add_argument("--claude-dir")
+    ui = _sub(groups, "ui", "Open the personal local status console")
+    ui.add_argument("--no-open", action="store_true", help="Return the local URL without launching a browser")
+    project = _sub(groups, "project", "Read a personal project recipe without executing it")
+    projects = project.add_subparsers(dest="action", required=True)
+    project_inspect = _sub(projects, "inspect", "Validate input files and show the explicit operation plan")
+    project_inspect.add_argument("--file", default="rmg-project.json")
+    task = _sub(groups, "task", "Manage evidence-backed personal task records")
+    tasks = task.add_subparsers(dest="action", required=True)
+    create = _sub(tasks, "create", "Create an idempotent task before starting remote actions")
+    create.add_argument("id")
+    create.add_argument("--title", required=True)
+    create.add_argument("--target", required=True)
+    create.add_argument("--artifact-file", help="Optional local artifact; record its name, size and SHA-256")
+    listed = _sub(tasks, "list", "List recent personal tasks without remote polling")
+    listed.add_argument("--limit", type=int, default=100)
+    for action in ("get", "seal", "cancel", "invoke"):
+        item = _sub(tasks, action, {"get": "Read task progress and evidence", "seal": "Finish submitting steps; derive completion from actual evidence",
+                                   "cancel": "Request cancellation of this task's durable jobs", "invoke": "Execute one tracked action from a JSON parameter file"}[action])
+        item.add_argument("id")
+        if action == "get":
+            item.add_argument("--refresh", action="store_true", help="Query linked remote jobs and retain last confirmed state on disconnect")
+        if action == "invoke":
+            item.add_argument("--method", required=True)
+            item.add_argument("--params-file", required=True, help="JSON RPC parameters, or '-' for standard input")
 
     skill = _sub(groups, "skill", "Install or inspect the local Claude skill (no daemon or remote connection)")
     skill_commands = skill.add_subparsers(dest="action", required=True)
@@ -105,9 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--known-hosts", help="SSH known_hosts file; unknown keys are rejected")
     add.add_argument("--shell", choices=("posix", "unknown"), help="Declare target shell capability for command/helper execution")
     add.add_argument("--encoding", help="Remote terminal encoding")
-    for action in ("remove", "check"):
+    for action in ("remove", "check", "inspect"):
         item = _sub(targets, action, "Remove configuration" if action == "remove" else "Check target connectivity and capabilities")
         item.add_argument("target")
+        if action == "inspect":
+            item.add_argument("--directory")
 
     execute = _sub(groups, "exec", "Start an independent remote command; use job for disconnect-safe long tasks")
     execute.add_argument("target")
@@ -133,6 +175,20 @@ def build_parser() -> argparse.ArgumentParser:
     opened.add_argument("--command", help="Optional program to start in the remote terminal")
     opened.add_argument("--profile-file", help="JSON interaction profile, or '-' for stdin")
     _sub(sessions, "list", "List interactive sessions")
+    step = _sub(sessions, "step", "Send once and observe; repeat the same request id to query without resending")
+    step.add_argument("id")
+    step.add_argument("data", nargs="?")
+    step.add_argument("--data-file")
+    step.add_argument("--request-id", required=True)
+    step.add_argument("--expect", required=True, help="Observed output condition; a match alone does not imply business success")
+    step.add_argument("--timeout", type=float, default=30)
+    step.add_argument("--regex", action="store_true")
+    step.add_argument("--no-newline", action="store_true")
+    step.add_argument("--sensitive", action="store_true")
+    _token(step)
+    step_get = _sub(sessions, "step-get", "Read a previously recorded interactive step without sending input")
+    step_get.add_argument("id")
+    step_get.add_argument("request_id")
     for action in ("get", "read", "write", "wait", "claim", "release", "leave", "close", "attach", "resize"):
         item = _sub(sessions, action, {
             "get": "Get session state and output cursor",
@@ -248,7 +304,7 @@ def _command(args: argparse.Namespace) -> str:
 def _control_token(args: argparse.Namespace) -> str:
     token = args.token or os.environ.get("RMG_CONTROL_TOKEN")
     if not token:
-        raise ValueError("Input control is required: pass --token from session open/claim or set RMG_CONTROL_TOKEN")
+        raise RemoteError("control_required", "Input control is required: pass --token from session open/claim or set RMG_CONTROL_TOKEN")
     return token
 
 
@@ -261,16 +317,80 @@ async def _wait_result(client: Client, result: dict[str, Any], *, method: str,
     if timeout < 0:
         raise ValueError("--wait-timeout must be non-negative")
     started = time.monotonic()
+    task_context = result.get("_task")
     while _state(result) not in TERMINAL_STATES:
         if timeout and time.monotonic() - started >= timeout:
             return {**result, "wait_timed_out": True, "message": "Local wait timed out; remote completion is not implied."}
         await asyncio.sleep(0.2)
         result = await client.call(method, params)
+        if task_context is not None:
+            result = {**result, "_task": task_context}
     return result
+
+
+class TaskClient:
+    """Attach the invocation to a task while leaving observation polling unwrapped."""
+    def __init__(self, client, task_id, step_id, label=None):
+        self.client, self.task_id, self.step_id, self.label = client, task_id, step_id, label
+        self.used = False
+
+    async def call(self, method, params=None):
+        if self.used:
+            return await self.client.call(method, params)
+        self.used = True
+        envelope = await self.client.call("task.invoke", {"task_id": self.task_id, "method": method,
+                        "params": params or {}, "request_id": self.step_id, "label": self.label})
+        result = envelope.get("result")
+        metadata = {key: value for key, value in envelope.items() if key != "result"}
+        if not isinstance(result, dict):
+            return {**envelope, "_task": metadata}
+        result = {**result, "_task": metadata}
+        for key in ("control_required", "advice", "error"):
+            if key in envelope:
+                result[key] = envelope[key]
+        if envelope.get("state") in {"unknown", "needs_attention", "failed"}:
+            result["last_result_state"] = result.get("state")
+            result["state"] = "unknown" if envelope["state"] == "needs_attention" else envelope["state"]
+            result["outcome"] = result["state"]
+        return result
+
+
+def command_schema():
+    def describe(parser):
+        options, commands = [], {}
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                commands = {name: describe(sub) for name, sub in action.choices.items()}
+            elif action.dest != "help":
+                options.append({"name": action.dest, "flags": action.option_strings, "required": action.required,
+                                "choices": list(action.choices) if action.choices is not None else None,
+                                "help": action.help, "type": getattr(action.type, "__name__", "string")})
+        return {"description": parser.description, "arguments": options, "commands": commands}
+    return {"schema_version": 1, "tool_version": __version__, "cli": describe(build_parser()),
+            "result_contract": {"format": "JSON with --json", "errors": {"error": {"code": "string", "message": "string", "details": "object"}},
+                                "exit_codes": {"0": "call completed; inspect state", "1": "error or failed operation", "2": "unknown result or invalid arguments", "124": "local wait timeout", "130": "local interruption"},
+                                "retry": "Never replay an unknown mutation. Reuse task/step/request/job IDs and inspect existing evidence."}}
 
 
 async def dispatch(args: argparse.Namespace) -> Any:
     """Dispatch one CLI invocation, retaining identifiers and output evidence."""
+    if args.group == "schema":
+        return command_schema()
+    if args.group == "project":
+        from .project import inspect_project
+        return inspect_project(args.file)
+    if args.group == "doctor":
+        from .diagnostics import local_doctor
+        result = await local_doctor(args.home, args.claude_dir)
+        if args.target:
+            client = Client(args.home)
+            result["target"] = await client.call("target.inspect", {"target": args.target, "directory": args.directory})
+            result["remote_checked"] = True
+            if result["target"]["state"] != "ready":
+                result["state"] = "needs_attention"
+        elif args.directory:
+            raise RemoteError("invalid_arguments", "--directory requires a target")
+        return result
     if args.group == "skill":
         from .skill_install import install_skill, skill_status, uninstall_skill
         handlers = {"install": install_skill, "status": skill_status, "uninstall": uninstall_skill}
@@ -281,6 +401,40 @@ async def dispatch(args: argparse.Namespace) -> Any:
         return None
     no_start = args.group == "server" and args.action in {"status", "stop"}
     client = Client(home=args.home, autostart=not no_start)
+    if args.group == "ui":
+        result = await client.call("server.ui", {})
+        if not args.no_open:
+            import webbrowser
+            result["browser_opened"] = webbrowser.open(result["url"])
+        return result
+    if args.group == "task":
+        params = {}
+        if args.action == "create":
+            params = {"id": args.id, "title": args.title, "target": args.target}
+            if args.artifact_file:
+                import hashlib
+                artifact = Path(args.artifact_file).expanduser().resolve()
+                digest = hashlib.sha256()
+                with artifact.open("rb") as file:
+                    while chunk := file.read(1024 * 1024):
+                        digest.update(chunk)
+                params["artifact"] = {"name": artifact.name, "bytes": artifact.stat().st_size, "sha256": digest.hexdigest()}
+        elif args.action == "list":
+            params["limit"] = args.limit
+        elif args.action == "invoke":
+            if not args.step_id:
+                raise RemoteError("invalid_arguments", "task invoke requires --step-id")
+            params = {"task_id": args.id, "method": args.method, "params": _read_json(args.params_file),
+                      "request_id": args.step_id, "label": args.label}
+        else:
+            params["id"] = args.id
+            if args.action == "get":
+                params["refresh"] = args.refresh
+        return await client.call("task." + args.action, params)
+    if args.task or args.step_id:
+        if not args.task or not args.step_id:
+            raise RemoteError("invalid_arguments", "Tracked actions require both --task and --step-id")
+        client = TaskClient(client, args.task, args.step_id, args.label)
     if args.group == "server":
         return await client.call("server.stop" if args.action == "stop" else "server.status", {})
     if args.group == "target":
@@ -295,6 +449,8 @@ async def dispatch(args: argparse.Namespace) -> Any:
                 config["client_keys"] = args.client_key
             config.setdefault("protocol", "ssh")
             return await client.call("target.put", {"name": args.name, "config": config})
+        if args.action == "inspect":
+            return await client.call("target.inspect", {"target": args.target, "directory": args.directory})
         return await client.call("target.remove" if args.action == "remove" else "target.check",
                                  {"name" if args.action == "remove" else "target": args.target})
     if args.group == "exec":
@@ -308,6 +464,8 @@ async def dispatch(args: argparse.Namespace) -> Any:
         if args.wait_timeout < 0:
             raise ValueError("--wait-timeout must be non-negative")
         result = await client.call("exec.start", params)
+        if _state(result) in TERMINAL_STATES:
+            return result
         return await _wait_result(client, result, method="operation.get", params={"id": result["id"]}, timeout=args.wait_timeout) if args.wait else result
     if args.group == "operation":
         if args.action == "list":
@@ -326,6 +484,15 @@ async def dispatch(args: argparse.Namespace) -> Any:
             if args.profile_file:
                 params["profile"] = _read_json(args.profile_file)
             return await client.call("session.open", params)
+        if args.action == "step-get":
+            return await client.call("session.step.get", {"id": args.id, "request_id": args.request_id})
+        if args.action == "step":
+            if sum(value is not None for value in (args.data, args.data_file)) != 1:
+                raise RemoteError("invalid_arguments", "Provide exactly one of DATA and --data-file")
+            return await client.call("session.step", {"id": args.id, "request_id": args.request_id,
+                          "data": _read_text(args.data_file) if args.data_file is not None else args.data,
+                          "control_token": _control_token(args), "pattern": args.expect, "timeout": args.timeout,
+                          "regex": args.regex, "newline": not args.no_newline, "sensitive": args.sensitive})
         if args.action == "attach":
             if args.json:
                 raise ValueError("session attach requires terminal output; omit --json")
@@ -359,6 +526,8 @@ async def dispatch(args: argparse.Namespace) -> Any:
             "remote_path": args.destination if upload else args.source,
             "protocol": args.protocol, "overwrite": args.overwrite, "recursive": args.recursive,
         })
+        if _state(result) in TERMINAL_STATES:
+            return result
         return await _wait_result(client, result, method="operation.get", params={"id": result["id"]}, timeout=args.wait_timeout) if args.wait else result
     if args.group == "helper":
         return await client.call("job.install", {"target": args.target})
@@ -377,6 +546,8 @@ async def dispatch(args: argparse.Namespace) -> Any:
         if args.action == "logs":
             params.update(stream=args.stream, offset=args.offset, limit=args.limit)
         result = await client.call("job." + args.action, params)
+        if _state(result) in TERMINAL_STATES:
+            return result
         if args.action == "start" and args.wait:
             job_id = result.get("job_id", result.get("id"))
             if not job_id:
@@ -537,10 +708,12 @@ def _print_result(result: Any, as_json: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = argparse.Namespace(json="--json" in argv)
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     try:
+        parser = build_parser()
+        args = parser.parse_args(argv)
         if args.group == "mcp":
             from .mcp_server import run_mcp
             run_mcp(args.home)
@@ -560,14 +733,17 @@ def main(argv: list[str] | None = None) -> int:
         print("Interrupted locally; remote completion or termination is not implied.", file=sys.stderr)
         return 130
     except Exception as exc:
-        error = {"error": exc.as_dict() if isinstance(exc, RemoteError) else {"type": type(exc).__name__, "message": str(exc)}}
+        error = {"error": exc.as_dict() if isinstance(exc, RemoteError) else {
+            "code": "invalid_input" if isinstance(exc, (ValueError, OSError)) else "internal_error",
+            "message": "Check the command's input files and parameters" if isinstance(exc, (ValueError, OSError)) else "An unexpected local error occurred",
+            "details": {"advice": "Inspect existing task/operation/job IDs before repeating any remote action."}}}
         if args.json:
             print(json.dumps(error, ensure_ascii=False, separators=(",", ":")))
         else:
-            print(f"rmg: {exc}", file=sys.stderr)
+            print(f"rmg: {error['error']['message']}", file=sys.stderr)
             if isinstance(exc, RemoteError) and exc.details:
                 print(json.dumps(exc.details, ensure_ascii=False, indent=2), file=sys.stderr)
-        return 1
+        return 2 if isinstance(exc, RemoteError) and exc.code == "invalid_arguments" else 1
 
 
 if __name__ == "__main__":

@@ -79,6 +79,23 @@ async def test_duplicate_submission_does_not_execute_twice(client):
     assert error.value.code == "job_id_conflict"
 
 
+async def test_missing_helper_is_definite_and_install_then_same_id_runs_once(client):
+    instance = JobClient({"helper_dir": str(Path(client.helper_dir) / "new-helper")})
+    output = Path(client.helper_dir) / "never-before-install"
+    command = f"printf X >> '{output}'"
+    with pytest.raises(RemoteError) as rejected:
+        await instance.start(command, job_id="missing-helper")
+    assert rejected.value.code == "helper_not_installed"
+    assert "no job command was executed" in rejected.value.details["recovery"]
+    assert not output.exists()
+    assert not Path(instance.helper_dir).exists()
+    await instance.install()
+    await instance.start(command, job_id="missing-helper")
+    await finished(instance, "missing-helper")
+    await instance.start(command, job_id="missing-helper")
+    assert output.read_text() == "X"
+
+
 async def test_concurrent_duplicate_submission(client):
     output = Path(client.helper_dir) / "concurrent-effect"
     command = f"printf X >> '{output}'; sleep 0.3"

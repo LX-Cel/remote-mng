@@ -29,11 +29,16 @@ async def run(home=None):
     manager = None
     runner = None
     token = secrets.token_urlsafe(48)
+    ui_token = secrets.token_urlsafe(48)
     stop = asyncio.Event()
     started = time.time()
     info_path = runtime / "server.json"
     try:
         manager = Manager(home)
+
+        def server_status():
+            return {"running": True, "pid": os.getpid(), "version": __version__, "protocol_version": 2,
+                    "home": str(home), "started_at": started, "sessions": len(manager.sessions)}
 
         async def rpc(request):
             supplied = request.headers.get("Authorization", "")
@@ -45,8 +50,10 @@ async def run(home=None):
                     raise RemoteError("invalid_request", "Expected method and params")
                 method, params = payload["method"], payload.get("params")
                 if method == "server.status":
-                    result = {"running": True, "pid": os.getpid(), "version": __version__,
-                              "home": str(home), "started_at": started, "sessions": len(manager.sessions)}
+                    result = server_status()
+                elif method == "server.ui":
+                    result = {"url": f"http://127.0.0.1:{port}/ui/#token={ui_token}",
+                              "scope": "personal_local_console", "advice": "The URL contains a local access key; do not share it."}
                 elif method == "server.stop":
                     asyncio.get_running_loop().call_later(0.1, stop.set)
                     result = {"stopping": True, "durable_jobs": "continue_remotely"}
@@ -64,6 +71,8 @@ async def run(home=None):
 
         app = web.Application(client_max_size=2 * 1024 * 1024)
         app.router.add_post("/rpc", rpc)
+        from .dashboard import install_dashboard
+        install_dashboard(app, manager, ui_token, server_status)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
