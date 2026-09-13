@@ -1,0 +1,316 @@
+{
+  "schema_version": 1,
+  "audited_at_utc": "2026-09-13T05:15:26.262428+00:00",
+  "scope": "Real Claude Code CLI acceptance against isolated local SSH/Telnet lab targets; mock CTP frontend and generated test package.",
+  "inspection_policy": "Only system init/task status, tool_use, tool_result and result events inspected. No thinking content, raw full tool outputs, credentials or control tokens copied.",
+  "counting_rule": "Bash calls count tool_use events. rmg invocations count each uv run rmg command, including chained help invocations. Final aggregate excludes the initial failed workflow run.",
+  "runs": {
+    "workflow-fixed": {
+      "source_events_sha256": "fe446477979b7e7b1f2584a246a971da6ac31f9b5c78e346c80b602834e64e85",
+      "source_event_lines": 254,
+      "claude_session_id": "0f3a60f0-eab4-4a6f-93a9-6ac7abb42f82",
+      "claude_code_version": "2.1.218",
+      "permission_mode": "dontAsk",
+      "process_exit_code": 0,
+      "claude_result_subtype": "success",
+      "claude_result_is_error": false,
+      "tool_counts": {
+        "Bash": 28,
+        "Read": 1
+      },
+      "bash_tool_calls": 28,
+      "bash_calls_containing_rmg": 27,
+      "rmg_cli_invocations": 31,
+      "mcp_tool_calls": 0,
+      "permission_denials": 0,
+      "tool_result_errors": 0,
+      "mcp_server_connected": true,
+      "available_remote_mng_mcp_tools": 28,
+      "job_mcp_tools_available": true
+    },
+    "submit": {
+      "source_events_sha256": "311dc7c608c81d5f5e67cd97f69ef2c8b061616ecff4efe2f551d028ee015e9b",
+      "source_event_lines": 46,
+      "claude_session_id": "d1eba1e8-0b6d-4661-ade2-ce5dcd89f4c3",
+      "claude_code_version": "2.1.218",
+      "permission_mode": "dontAsk",
+      "process_exit_code": 0,
+      "claude_result_subtype": "success",
+      "claude_result_is_error": false,
+      "tool_counts": {
+        "Bash": 2
+      },
+      "bash_tool_calls": 2,
+      "bash_calls_containing_rmg": 2,
+      "rmg_cli_invocations": 3,
+      "mcp_tool_calls": 0,
+      "permission_denials": 0,
+      "tool_result_errors": 0,
+      "mcp_server_connected": true,
+      "available_remote_mng_mcp_tools": 28,
+      "job_mcp_tools_available": true
+    },
+    "recover": {
+      "source_events_sha256": "6513e1302e9498f6528059f25c72fad82ff8f2505f7c345e2b6439140a89befe",
+      "source_event_lines": 94,
+      "claude_session_id": "77f282a3-d3f6-41df-af8b-53e55aee7b1f",
+      "claude_code_version": "2.1.218",
+      "permission_mode": "dontAsk",
+      "process_exit_code": 0,
+      "claude_result_subtype": "success",
+      "claude_result_is_error": false,
+      "tool_counts": {
+        "Bash": 7
+      },
+      "bash_tool_calls": 7,
+      "bash_calls_containing_rmg": 7,
+      "rmg_cli_invocations": 7,
+      "mcp_tool_calls": 0,
+      "permission_denials": 0,
+      "tool_result_errors": 0,
+      "mcp_server_connected": true,
+      "available_remote_mng_mcp_tools": 28,
+      "job_mcp_tools_available": true
+    }
+  },
+  "aggregate": {
+    "bash_tool_calls": 37,
+    "rmg_cli_invocations": 41,
+    "mcp_tool_calls": 0,
+    "permission_denials": 0,
+    "tool_result_errors": 0
+  },
+  "mcp_availability": {
+    "verified_from": "system.init tools and mcp_servers fields",
+    "remote_mng_tools": [
+      "mcp__remote-mng__exec_start",
+      "mcp__remote-mng__file_download",
+      "mcp__remote-mng__file_upload",
+      "mcp__remote-mng__helper_install",
+      "mcp__remote-mng__job_cancel",
+      "mcp__remote-mng__job_list",
+      "mcp__remote-mng__job_logs",
+      "mcp__remote-mng__job_start",
+      "mcp__remote-mng__job_status",
+      "mcp__remote-mng__operation_get",
+      "mcp__remote-mng__operation_list",
+      "mcp__remote-mng__operation_logs",
+      "mcp__remote-mng__server_status",
+      "mcp__remote-mng__session_claim",
+      "mcp__remote-mng__session_close",
+      "mcp__remote-mng__session_get",
+      "mcp__remote-mng__session_leave",
+      "mcp__remote-mng__session_list",
+      "mcp__remote-mng__session_open",
+      "mcp__remote-mng__session_read",
+      "mcp__remote-mng__session_release",
+      "mcp__remote-mng__session_resize",
+      "mcp__remote-mng__session_wait",
+      "mcp__remote-mng__session_write",
+      "mcp__remote-mng__target_check",
+      "mcp__remote-mng__target_list",
+      "mcp__remote-mng__target_put",
+      "mcp__remote-mng__target_remove"
+    ],
+    "connected_in_all_three_runs": true,
+    "tools_available_in_all_three_runs": true,
+    "conclusion": "MCP was connected and callable, but the three accepted runs used zero MCP calls."
+  },
+  "workflow": {
+    "upload": {
+      "operation_id": "919caeeda8254a1b8dc81ee487c2a576",
+      "entrypoint": "rmg CLI",
+      "final_state": "succeeded",
+      "protocol": "sftp",
+      "bytes": 233,
+      "verification": "sha256",
+      "sha256": "81fb85fce549e35e0b9cab773ab09ffcaf23be960316d298fbb2db0b8aae2a87",
+      "local_sha256": "81fb85fce549e35e0b9cab773ab09ffcaf23be960316d298fbb2db0b8aae2a87",
+      "sha256_match": true,
+      "remote_posix_path_preserved": true
+    },
+    "deployment": {
+      "extract_operation_id": "c02668a19eab486dbbae561e5eb6aa26",
+      "extract_state": "succeeded",
+      "extract_exit_code": 0,
+      "selftest_operation_id": "7e39da10d9214b2fa8749dffeadc10d7",
+      "selftest_state": "succeeded",
+      "selftest_exit_code": 0,
+      "selftest_output": "SELFTEST_PASS version=claude-cli-acceptance-v1"
+    },
+    "interactive": [
+      {
+        "target": "lab-ssh",
+        "session_id": "e852a7f4b36b4fdb9670fc96fdfe2c53",
+        "opened_state": "open",
+        "initial_prompt_matched": true,
+        "checks": [
+          {
+            "input": "TI PING",
+            "input_cursor": 188,
+            "wait_offset": 188,
+            "cursor_after_input": true,
+            "matched": true,
+            "expected_output": "PONG",
+            "expected_output_observed": true,
+            "next_offset": 218
+          },
+          {
+            "input": "TI RUN SMOKE",
+            "input_cursor": 218,
+            "wait_offset": 218,
+            "cursor_after_input": true,
+            "matched": true,
+            "expected_output": "RESULT PASS; cases=3 failed=0",
+            "expected_output_observed": true,
+            "next_offset": 296
+          }
+        ],
+        "leave_outer_prompt_matched": true,
+        "leave_outer_prompt": "LAB$ ",
+        "closed_state": "closed",
+        "remote_process_state_on_close": "unknown"
+      },
+      {
+        "target": "lab-telnet",
+        "session_id": "4fc4acad76c8471fa5b6715fb0454720",
+        "opened_state": "open",
+        "initial_prompt_matched": true,
+        "checks": [
+          {
+            "input": "TI PING",
+            "input_cursor": 143,
+            "wait_offset": 143,
+            "cursor_after_input": true,
+            "matched": true,
+            "expected_output": "PONG",
+            "expected_output_observed": true,
+            "next_offset": 162
+          },
+          {
+            "input": "TI RUN SMOKE",
+            "input_cursor": 162,
+            "wait_offset": 162,
+            "cursor_after_input": true,
+            "matched": true,
+            "expected_output": "RESULT PASS; cases=3 failed=0",
+            "expected_output_observed": true,
+            "next_offset": 223
+          }
+        ],
+        "leave_outer_prompt_matched": true,
+        "leave_outer_prompt": "LAB$ ",
+        "closed_state": "closed",
+        "remote_process_state_on_close": "unknown"
+      }
+    ]
+  },
+  "durable_job": {
+    "submission": {
+      "job_id": "claude-durable-001",
+      "target": "lab-ssh",
+      "state": "running",
+      "pid": 1280,
+      "started_at": 1789276116,
+      "cancel_requested": false,
+      "reused": false,
+      "operation_id": "a449225ea41946f58b3582fbe82a2ca4"
+    },
+    "initial_stdout": {
+      "markers": [
+        "DURABLE_STARTED"
+      ],
+      "next_offset": 16
+    },
+    "restart": {
+      "controller": "External test harness between two independent Claude CLI sessions",
+      "before_daemon": {
+        "pid": 44876,
+        "started_at": 1789275877.1371412,
+        "running": true
+      },
+      "daemon_stopped_error": "daemon_not_running",
+      "remote_pid_exists_while_daemon_stopped": true,
+      "after_daemon": {
+        "pid": 48036,
+        "started_at": 1789276234.6292808,
+        "running": true
+      },
+      "before_job": {
+        "job_id": "claude-durable-001",
+        "target": "lab-ssh",
+        "state": "running",
+        "pid": 1280,
+        "started_at": 1789276116,
+        "cancel_requested": false
+      },
+      "after_job": {
+        "job_id": "claude-durable-001",
+        "target": "lab-ssh",
+        "state": "running",
+        "pid": 1280,
+        "started_at": 1789276116,
+        "cancel_requested": false
+      }
+    },
+    "claude_recovery_session_is_distinct": true,
+    "first_status_in_recovery": {
+      "job_id": "claude-durable-001",
+      "target": "lab-ssh",
+      "state": "running",
+      "pid": 1280,
+      "started_at": 1789276116,
+      "cancel_requested": false
+    },
+    "release_gate": {
+      "performed_by": "Claude Code CLI through rmg exec",
+      "operation_id": "40a1bb6b5bce409383b90049ee8fb346",
+      "state": "succeeded",
+      "exit_code": 0
+    },
+    "final_status": {
+      "job_id": "claude-durable-001",
+      "target": "lab-ssh",
+      "state": "succeeded",
+      "pid": 1280,
+      "started_at": 1789276116,
+      "finished_at": 1789276260,
+      "exit_code": 0,
+      "cancel_requested": false
+    },
+    "same_job_identity_across_submit_restart_and_completion": true,
+    "job_start_invocations_in_submit": 1,
+    "job_start_invocations_in_recover": 0,
+    "observed_elapsed_job_seconds": 144,
+    "final_stdout": {
+      "markers": [
+        "DURABLE_STARTED",
+        "DURABLE_FINISHED_AFTER_RESTART"
+      ],
+      "offset": 0,
+      "next_offset": 47,
+      "snapshot_size": 47,
+      "eof": true
+    },
+    "final_stderr_bytes": 0,
+    "conclusion": "The original gated job survived the submitting Claude process exit and an actual local daemon stop/restart, remained running under the same job ID/PID/start time, and then completed with exit code 0 after the new Claude session released it. No job resubmission occurred."
+  },
+  "initial_run_context": {
+    "name": "workflow",
+    "included_in_accepted_aggregate": false,
+    "bash_tool_calls": 28,
+    "rmg_cli_invocations_attempted": 25,
+    "mcp_tool_calls": 2,
+    "permission_denials": 3,
+    "failure": "Git Bash rewrote the POSIX upload path; CLI operation completed as failed/invalid_path. Two environment override command forms were denied.",
+    "fallback": "MCP file_upload and operation_get completed an SFTP transfer; this initial run cannot establish CLI-only upload success."
+  },
+  "validation_limits": [
+    "No company target or real CTP software was used.",
+    "Claude upload used SFTP; this evidence does not establish legacy SCP behavior.",
+    "The daemon was stopped/restarted by the external harness, not by Claude.",
+    "The durable-job experiment used a gated approximately 144-second job on SSH; it does not test host power loss, multi-hour soak, or arbitrary network outages.",
+    "No job cancellation occurred in these Claude runs.",
+    "Frontend detachment messages are mock application output; backend survival was not independently verified. session.close reported remote_process_state unknown."
+  ]
+}

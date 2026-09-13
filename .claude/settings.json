@@ -1,0 +1,5 @@
+{
+  "env": {
+    "MSYS2_ARG_CONV_EXCL": "*"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "protocol": "ssh",
+  "host": "127.0.0.1",
+  "port": 2222,
+  "username": "demo",
+  "known_hosts": "~/.ssh/known_hosts",
+  "shell": "posix",
+  "connect_timeout": 15,
+  "transfer_timeout": 3600,
+  "encoding": "utf-8",
+  "term_type": "xterm",
+  "cols": 80,
+  "rows": 24,
+  "helper_dir": "~/.local/share/remote-mng"
+}

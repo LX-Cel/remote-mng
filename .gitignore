@@ -1,0 +1,17 @@
+.venv/
+.venv-linux/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.rmg/
+.test-state/
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+/.mcp.json

@@ -1,0 +1,353 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-09-13",
+  "scope": "Installed personal Claude Code Skill driving the CLI in an isolated consumer project; controlled SSH/Telnet lab.",
+  "sources": {
+    "workflow/events.jsonl": "a383b950fd28373201e7d68312b328e1f2fec7b2dc3f7712a95483cf4c8d27ad",
+    "recover/events.jsonl": "c7fa5b47fbc236777d30657bef06128322f7cdb4dbf3e5733103955579f35fed",
+    "install-evidence.json": "bd9edfbaaa3bd45a09045c2792195cd5480a7a638f941c898516d68aad122bd0",
+    "upgrade-evidence.json": "4b8c1fd17a509a407a42470e82cf05199001ea05eb659f4cfb1804656b57f417",
+    "restart-evidence.json": "248f78808a79358b6170a7585f7477afc5352d36b6eea0e85095e695ba88612d",
+    "cleanup-evidence.json": "430b50550d374d34de89a72254c1c831ff9cc7de11a99cc6d13d81d435d7af12",
+    "cleanup-local-evidence.json": "0a78446ea1302c6cf3ad686cb123a3722b955047588ecc12ec47508c2386d758"
+  },
+  "entry": {
+    "client": "Claude Code terminal CLI",
+    "claude_code_version": "2.1.218",
+    "available_tools": [
+      "Bash",
+      "Read",
+      "Skill"
+    ],
+    "remote_mng_skill_discovered_in_both_inits": true,
+    "mcp_servers_in_both_inits": [],
+    "distinct_claude_sessions": true,
+    "invocation_chain": [
+      "Skill(remote-mng)",
+      "installed personal skill/scripts/rmg.sh",
+      "bound Python remote_mng CLI"
+    ],
+    "rmg_path_dependency": false,
+    "model": "glm-5.3[1m]",
+    "path_setup": "Claude PATH was not extended with the newly installed rmg; the installed Skill calls the bound Python in the independent tools environment."
+  },
+  "isolation": {
+    "consumer_cwd_outside_source": true,
+    "consumer_path_contains_space": true,
+    "consumer_path_contains_apostrophe": true,
+    "project_CLAUDE_md_absent": true,
+    "project_dotclaude_absent": true,
+    "personal_settings_absent": true,
+    "source_checkout_memory_loaded": false,
+    "installed_package_from_site_packages": true
+  },
+  "installation": {
+    "action": "installed",
+    "integrity": "verified",
+    "python_binding_exists": true,
+    "package_version": "0.1.0",
+    "upgrade_action": "updated",
+    "repeat_install_action": "unchanged",
+    "unicode_utf8_json_verified": true,
+    "wrapper_python_utf8_enabled": true
+  },
+  "runs": {
+    "workflow": {
+      "tool_calls": {
+        "Skill": 1,
+        "Bash": 33,
+        "Read": 9
+      },
+      "wrapper_cli_invocations": 31,
+      "mcp_calls": 0,
+      "tool_result_errors": 0,
+      "permission_denials": 0,
+      "process_exit_code": 0,
+      "final_result_subtype": "success",
+      "skill_invocations": [
+        "remote-mng"
+      ]
+    },
+    "recover": {
+      "tool_calls": {
+        "Skill": 1,
+        "Bash": 14,
+        "Read": 3
+      },
+      "wrapper_cli_invocations": 14,
+      "mcp_calls": 0,
+      "tool_result_errors": 0,
+      "permission_denials": 0,
+      "process_exit_code": 0,
+      "final_result_subtype": "success",
+      "skill_invocations": [
+        "remote-mng"
+      ]
+    }
+  },
+  "totals": {
+    "Bash": 47,
+    "Read": 12,
+    "Skill": 2,
+    "wrapper_cli_invocations": 45,
+    "mcp_calls": 0,
+    "permission_denials": 0
+  },
+  "workflow_business": {
+    "upload": {
+      "state": "succeeded",
+      "protocol": "sftp",
+      "bytes": 784,
+      "sha256": "d9a7aa70dda4a1c7b0c112ab8e76b5c453941346398fc1919b9d72821ea15751",
+      "local_hash_matches": true
+    },
+    "deploy": {
+      "state": "succeeded",
+      "exit_code": 0,
+      "marker": "DEPLOY_OK version=1.0.0-skill"
+    },
+    "helper_install_targets": [
+      "skill-ssh",
+      "skill-telnet"
+    ],
+    "interactive": [
+      {
+        "target": "skill-ssh",
+        "session_id": "afcc8fbd41644c478dc1831ff2109429",
+        "entry_matched": true,
+        "writes": [
+          {
+            "text": "TI VERSION",
+            "cursor": 278
+          },
+          {
+            "text": "TI RUN SMOKE",
+            "cursor": 329
+          },
+          {
+            "text": "quit",
+            "cursor": 407
+          }
+        ],
+        "waits": [
+          {
+            "pattern": "version=1.0.0-skill",
+            "offset": 278,
+            "matched": false,
+            "next_offset": 329,
+            "result_pass": false
+          },
+          {
+            "pattern": "VERSION=1.0.0-skill",
+            "offset": 278,
+            "matched": true,
+            "next_offset": 329,
+            "result_pass": false
+          },
+          {
+            "pattern": "SMOKE.*PASS|PASS",
+            "offset": 329,
+            "matched": true,
+            "next_offset": 407,
+            "result_pass": true
+          },
+          {
+            "pattern": "LAB\\\\$ ",
+            "offset": 407,
+            "matched": false,
+            "next_offset": 470,
+            "result_pass": false
+          }
+        ],
+        "leave_count": 1,
+        "close_count": 1,
+        "manual_quit_count": 1,
+        "leave_prompt_matched": true,
+        "leave_shell_quit_error": true,
+        "final_state": "closed"
+      },
+      {
+        "target": "skill-telnet",
+        "session_id": "f85b163221954b3689b4138d99389625",
+        "entry_matched": true,
+        "writes": [
+          {
+            "text": "TI VERSION",
+            "cursor": 201
+          },
+          {
+            "text": "TI RUN SMOKE",
+            "cursor": 238
+          }
+        ],
+        "waits": [
+          {
+            "pattern": "VERSION=1.0.0-skill",
+            "offset": 201,
+            "matched": true,
+            "next_offset": 238,
+            "result_pass": false
+          },
+          {
+            "pattern": "RESULT PASS",
+            "offset": 238,
+            "matched": true,
+            "next_offset": 299,
+            "result_pass": true
+          }
+        ],
+        "leave_count": 1,
+        "close_count": 1,
+        "manual_quit_count": 0,
+        "leave_prompt_matched": true,
+        "leave_shell_quit_error": false,
+        "final_state": "closed"
+      }
+    ],
+    "job_start": {
+      "target": "skill-ssh",
+      "job_id": "skill-durable-001",
+      "pid": 698,
+      "started_at": 1789281310,
+      "state": "running"
+    }
+  },
+  "recovery_business": {
+    "daemon_before_pid": 54500,
+    "daemon_stop_reported": true,
+    "stopped_probe_error": "daemon_not_running",
+    "job_before_daemon_stop": {
+      "target": "skill-ssh",
+      "job_id": "skill-durable-001",
+      "pid": 698,
+      "started_at": 1789281310,
+      "finished_at": 1789281335,
+      "state": "succeeded",
+      "exit_code": 0
+    },
+    "job_after_new_claude_cold_start": {
+      "target": "skill-ssh",
+      "job_id": "skill-durable-001",
+      "pid": 698,
+      "started_at": 1789281310,
+      "finished_at": 1789281335,
+      "state": "succeeded",
+      "exit_code": 0
+    },
+    "original_job_identity_preserved": true,
+    "job_start_calls": 0,
+    "stdout": {
+      "offset": 0,
+      "next_offset": 49,
+      "eof": true,
+      "markers": [
+        "LONG_JOB_BEGIN",
+        "LONG_JOB_PASS version=1.0.0-skill"
+      ]
+    },
+    "stderr": {
+      "offset": 0,
+      "next_offset": 0,
+      "eof": true
+    },
+    "interactive": [
+      {
+        "target": "skill-ssh",
+        "session_id": "35363d6e5d2b4a35b39c5c76cf88b09a",
+        "entry_matched": true,
+        "writes": [
+          {
+            "text": "TI VERSION",
+            "cursor": 278
+          }
+        ],
+        "waits": [
+          {
+            "pattern": "1.0.0-skill",
+            "offset": 278,
+            "matched": true,
+            "next_offset": 329,
+            "result_pass": false
+          }
+        ],
+        "leave_count": 1,
+        "close_count": 1,
+        "manual_quit_count": 0,
+        "leave_prompt_matched": true,
+        "leave_shell_quit_error": false,
+        "final_state": "closed"
+      },
+      {
+        "target": "skill-telnet",
+        "session_id": "a3e5706871544b9bb874366d2ab9b5a7",
+        "entry_matched": true,
+        "writes": [
+          {
+            "text": "TI VERSION",
+            "cursor": 201
+          }
+        ],
+        "waits": [
+          {
+            "pattern": "1.0.0-skill",
+            "offset": 201,
+            "matched": true,
+            "next_offset": 238,
+            "result_pass": false
+          }
+        ],
+        "leave_count": 1,
+        "close_count": 1,
+        "manual_quit_count": 0,
+        "leave_prompt_matched": true,
+        "leave_shell_quit_error": false,
+        "final_state": "closed"
+      }
+    ],
+    "daemon_after_cold_start_pid": 62716
+  },
+  "initial_observation_defects": [
+    {
+      "kind": "case_sensitive_version_wait",
+      "observed": "matched=false for lowercase version=; corrected uppercase wait matched=true from the same write cursor."
+    },
+    {
+      "kind": "exit_prompt_literal_mismatch",
+      "observed": "After manual quit, literal prompt wait matched=false although the outer prompt was present."
+    },
+    {
+      "kind": "duplicate_exit",
+      "observed": "SSH manual quit followed by session leave sent quit to the outer shell; quit: not found appeared despite prompt match."
+    },
+    {
+      "kind": "windows_stdout_encoding",
+      "observed": "A separate Unicode/emoji probe exposed GBK stdout encoding. The upgraded wrapper forces PYTHONIOENCODING=utf-8; upgrade evidence records a passing UTF-8 JSON probe."
+    }
+  ],
+  "recheck": "The upgraded skill was loaded in a new Claude session. Both transports matched version output from each new write cursor, used exactly one leave and one close, and produced no duplicate-quit shell error.",
+  "limitations": [
+    "This experiment queried a job which had already succeeded before the local daemon was stopped; it does not prove survival of an interruption while running.",
+    "The previous claude-code-evidence.json records the separate running-job daemon-restart experiment.",
+    "Controlled lab evidence is not verification against a company deployment target.",
+    "Zero tool_result errors does not imply all observations matched; workflow has two matched=false waits and a shell quit error."
+  ],
+  "privacy": "Whitelist fields only; no raw prompts, model reasoning, credentials, control tokens, full local user paths, or raw complete tool outputs.",
+  "cleanup": {
+    "isolated_skill_action": "uninstalled",
+    "isolated_skill_installed": false,
+    "skill_integrity": "absent",
+    "skill_uninstall_target_confirmed_isolated": true,
+    "local_daemon_stop_requested": true,
+    "lab_stopped": true,
+    "lab_ports_reachable": {
+      "22314": false,
+      "23314": false
+    },
+    "lab_launcher_running": false,
+    "lab_launcher_exit_code": 0,
+    "remaining_lab_process_count": 0,
+    "remaining_lab_listener_count": 0,
+    "business_files_and_targets_retained": true,
+    "real_global_configuration": "Cleanup was scoped to the isolated consumer Skill and test services; real global configuration was not modified."
+  }
+}

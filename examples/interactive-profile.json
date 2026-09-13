@@ -1,0 +1,8 @@
+{
+  "name": "generic-test-console",
+  "enter": "sh /tmp/demo-console.sh",
+  "prompt": "demo> $",
+  "exit": "quit",
+  "exit_prompt": "(?m)^[^\\r\\n]*[#$] $",
+  "timeout": 10
+}

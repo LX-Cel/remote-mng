@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote-mng"
+version = "0.1.0"
+description = "Shared SSH/Telnet sessions, file transfer and durable remote jobs for humans and agents"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+  "asyncssh>=2.21,<3",
+  "telnetlib3>=2.0.8,<5",
+  "aiohttp>=3.12,<4",
+  "pydantic>=2.11,<3",
+  "mcp>=2.2,<3",
+  "filelock>=3.18,<4",
+  "regex>=2024.11",
+]
+
+[project.scripts]
+rmg = "remote_mng.cli:main"
+
+[project.urls]
+Repository = "https://github.com/LX-Cel/remote-mng"
+Documentation = "https://github.com/LX-Cel/remote-mng/blob/main/docs/claude-skill.md"
+Issues = "https://github.com/LX-Cel/remote-mng/issues"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12", "build>=1.2", "pip-audit>=2.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_mng"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

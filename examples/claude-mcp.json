@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "remote-mng": {
+      "type": "stdio",
+      "command": "rmg",
+      "args": ["mcp"]
+    }
+  }
+}
