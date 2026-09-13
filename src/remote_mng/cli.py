@@ -309,7 +309,7 @@ def _control_token(args: argparse.Namespace) -> str:
 
 
 def _state(result: dict[str, Any]) -> str:
-    return str(result.get("state", result.get("status", "")))
+    return str(result.get("state", result.get("status", ""))) if isinstance(result, dict) else ""
 
 
 async def _wait_result(client: Client, result: dict[str, Any], *, method: str,
@@ -709,6 +709,12 @@ def _print_result(result: Any, as_json: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--json" in argv:
+        # Keep the machine-readable wire encoding stable on native Windows,
+        # including when the caller pipes Chinese task labels or file paths.
+        for stream in (sys.stdout, sys.stderr):
+            if callable(getattr(stream, "reconfigure", None)):
+                stream.reconfigure(encoding="utf-8")
     args = argparse.Namespace(json="--json" in argv)
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     try:

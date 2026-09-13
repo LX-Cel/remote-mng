@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 import sys
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -69,6 +71,26 @@ def test_job_script_keeps_multiline_command_and_stable_id(fake_client, capsys, t
     assert cli.main(["job", "start", "board", "--script", str(script), "--job-id", "deploy-42", "--json"]) == 0
     assert fake_client.calls[0][1] == {"target": "board", "command": script.read_text(encoding="utf-8"), "env": {}, "job_id": "deploy-42"}
     assert json.loads(capsys.readouterr().out)["job_id"] == "deploy-42"
+
+
+@pytest.mark.parametrize("jobs", [[], [{"job_id": "previous-run", "state": "failed"}]])
+def test_job_list_returns_inventory_without_interpreting_it_as_one_job(fake_client, capsys, jobs):
+    fake_client.responses = [jobs]
+    assert cli.main(["job", "list", "board", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == jobs
+    assert fake_client.calls == [("job.list", {"target": "board"})]
+
+
+def test_json_pipe_uses_utf8_even_with_legacy_windows_encoding():
+    script = (
+        "from remote_mng import cli\n"
+        "async def dispatch(args): return {'message': '\\u4e2d\\u6587'}\n"
+        "cli.dispatch = dispatch\n"
+        "raise SystemExit(cli.main(['--json', 'schema']))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                            env={**os.environ, "PYTHONIOENCODING": "cp936"}, check=True)
+    assert json.loads(result.stdout.decode("utf-8")) == {"message": "中文"}
 
 
 def test_secret_input_uses_stdin_and_requires_control_token(fake_client, monkeypatch, capsys):

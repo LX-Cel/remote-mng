@@ -48,8 +48,8 @@
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows 原生 | 261 passed，27 skipped |
-| WSL Ubuntu/Linux | 288 passed |
+| Windows 原生 | 264 passed，27 skipped |
+| WSL Ubuntu/Linux | 291 passed |
 
 Windows 跳过项目主要依赖 Linux `/proc`、Shell helper 或平台特定进程行为，已在 WSL 执行。测试覆盖任务归属、重复请求、前置条件修复、断线未知结果、日志轮转、认证边界、配方路径及真实 SSH/Telnet/SFTP。Ruff、Skill 格式检查、CLI 文档示例检查均通过。
 

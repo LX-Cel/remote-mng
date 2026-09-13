@@ -4,11 +4,11 @@
   "scope": "loopback SSH/Telnet on WSL Linux; no business device",
   "automated_tests": {
     "windows": {
-      "passed": 261,
+      "passed": 264,
       "skipped": 27
     },
     "wsl_linux": {
-      "passed": 288,
+      "passed": 291,
       "skipped": 0
     }
   },
