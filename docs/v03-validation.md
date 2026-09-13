@@ -56,3 +56,18 @@
 没有真实 CTP、企业堡垒机或嵌入式设备。未承诺任意多跳/OTP 自动处理、字节级续传、交互终端断线重接、远端重启后自动续跑或目录部署事务。后台服务应在业务脚本中按实际需求重定向标准流；脚本退出、文件传输完成和业务测试通过分别判断。
 
 本轮没有在相同设备和模型条件下运行 sshmng，因此不报告“成功率超过 sshmng”或网络吞吐提升百分比。
+
+## GitHub 发行验证
+
+固定 tag `v0.3.0` 对应源码 `f37773d8cd53b73d4715e34237887b5cc4487988`。[该提交的六组合 CI](https://github.com/LX-Cel/remote-mng/actions/runs/34753463479) 已全部通过；本机已安装版本的 37 个源码/资源文件也与该源码一致（文本换行统一后比较）。
+
+[独立包流水线](https://github.com/LX-Cel/remote-mng/actions/runs/34753463439) 中 Ubuntu 22.04 构建与完整 smoke 成功，实际清单记录 glibc 2.35。Windows 构建成功，但 GitHub 托管机拒绝 `CREATE_BREAKAWAY_FROM_JOB`，安装健康检查的独立 daemon 无法启动，因此 Windows smoke 失败、自动发布被阻止。未把这次失败改写为通过，也未绕过宿主限制。
+
+Windows 发布包改为在普通本机环境从同一固定提交构建，完整 smoke 通过后手动发布；Linux 使用上述 CI 的成功资产。两个 ZIP 的 SHA256 与内部全部文件摘要均已核对。后续流水线在成功构建后，即使 smoke 失败也保留 artifact，方便在有能力的主机验证；自动发布仍要求所有 smoke 成功。
+
+| 发行资产 | 来源 | 字节数 | SHA256 |
+| --- | --- | ---: | --- |
+| `remote-mng-0.3.0-windows-x86_64.zip` | Windows 本机，Python 3.12.11，795 个文件核对 | 29,948,984 | `dc72ddcca4030ab745c5db44e17f6e15d5f49b0e47d8e7415852884d755626d1` |
+| `remote-mng-0.3.0-linux-x86_64.zip` | Ubuntu 22.04 CI，Python 3.11.16，glibc 2.35，748 个文件核对 | 43,861,806 | `47024455887cc949df3e58001c4078a852b7302a8a3997fe818a766b5f00c175` |
+
+此表只对应 [0.3.0 Release](https://github.com/LX-Cel/remote-mng/releases/tag/v0.3.0)，不要使用前期本地快照摘要校验发行资产。仓库仍为私有；发布页同时提供每包校验文件及 Windows/Linux 安装脚本。

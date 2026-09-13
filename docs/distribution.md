@@ -17,6 +17,8 @@ remote-mng 仍由 Python 实现。独立发行包把解释器、依赖、网页�
 
 从有访问权限的 GitHub 固定 release 下载对应 ZIP 和 `.sha256`。仓库私有时使用自己的 `gh` 登录身份，不把 GitHub token 写入 remote-mng 配置。先核对 release 身份与完整 SHA256，再使用仓库内可检查的安装脚本。
 
+0.3.0 发布页也提供 `install-release.ps1` 和 `install-release.sh`。只下载发布资产时，可将脚本与 ZIP 放在同一目录，把下方的 `scripts/` 前缀去掉；不必为安装获取开发环境。阅读脚本后执行一次，之后由 Agent 使用 Skill。
+
 Windows PowerShell：
 
 ```powershell
@@ -92,3 +94,5 @@ uv run --frozen python scripts/smoke_release.py --build-result dist/release/buil
 构建生成 ZIP、SHA256、逐文件清单和 `build-result.json`。smoke 的 Python 只充当测试服务器与断言工具；被测 CLI、后台 daemon、Skill 绑定全部来自独立包，工作目录在仓库外，PATH 移除开发 Python。测试使用含中文、空格与单引号的临时目录，覆盖安装、资源、SSH 返回码、SFTP、Telnet 去重、持久任务和兼容重装/回退；Linux 还运行真实 detached helper 作业并核对副作用恰好一次。多版本升级/回退与失败恢复的状态边界由 `tests/test_distribution.py` 独立验证。
 
 `.github/workflows/release.yml` 在 Windows 和 Ubuntu 22.04 构建并执行上述 smoke。手动工作流仅保存 Actions artifacts，tag 推送在两平台成功后创建 release；仓库可见性保持原有设置。此文描述流水线实现，不把未运行的 GitHub Actions 当作通过记录。
+
+GitHub 托管 Windows runner 在本次验收中禁止独立 daemon 脱离 Job Object，因此其完整 smoke 会准确失败，自动发布也会停止。后续流水线即使 smoke 失败仍保留已成功构建的制品，便于在具备所需能力的 Windows 主机验证；不会把下载得到的未验证 artifact 自动发布。0.3.0 的 Windows 资产在普通本机环境从同一固定提交构建并通过完整 smoke，Linux 资产来自通过 smoke 的 Ubuntu 22.04 CI。最终发行的具体来源、摘要与检查记录见 [交付总表](v03-validation.md)。这不是放宽 Agent 宿主限制；日常仍要求在独立终端完成安装和预启动。

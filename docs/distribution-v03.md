@@ -71,4 +71,4 @@ Linux 额外通过真实 detached helper 测试：作业写入计数文件，CLI
 
 另外在 Windows 完成了真实 frozen 制品跨版本切换：`0.3.0 → 0.3.1-smoke.1 → 0.3.0`。第二个制品来自仓库外的源码副本，仅更改版本标记用于验收，未修改主项目版本或发布该测试版本。每次切换都运行候选 daemon/Skill 健康检查，启动后返回正确的新/旧版本；稳定 Skill 绑定不变，同一 SQLite 任务 ID 在升级和回退后均可查询。制品摘要分别为 `fb4a5fd729c71586918de65070db481cb28d1fb8d37000ea799a8d8ddc155eab` 和 `63fd7c57de2fe93e1a72551d6d640a3217e0853e3aab2bbb0f678c10f9f747ce`，记录在 `.test-state/upgrade-bootstrap-result.json`。该测试验证兼容协议与数据库下的真实程序切换，不代表未来任意版本或跨数据库迁移都可回退；失败恢复边界仍由确定性测试覆盖。
 
-没有真实 CTP 设备，未把 TI 业务验收、任意企业网络、ARM 或 glibc 2.35 兼容性写成已经验证。真实 Claude 的固定试验与最后两次新包跟进，单独记录在 [validation-agent-v03.md](validation-agent-v03.md)，不把 loopback smoke 冒充 Agent 自主成功率。
+没有真实 CTP 设备，未把 TI 业务验收、任意企业网络或 ARM 兼容性写成已经验证。上述本地 Linux 快照只覆盖 glibc 2.39；随后 CI 的 glibc 2.35 验证与最终发行资产记录在 [GitHub 发行验证](v03-validation.md#github-发行验证)。真实 Claude 的固定试验与最后两次新包跟进，单独记录在 [validation-agent-v03.md](validation-agent-v03.md)，不把 loopback smoke 冒充 Agent 自主成功率。
