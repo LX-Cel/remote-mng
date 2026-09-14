@@ -30,6 +30,28 @@ class SSHServer(asyncssh.SSHServer):
         return False
 
 
+def _git_bash():
+    """Find Bash beside Git for Windows, never the WSL launcher on PATH."""
+    git = shutil.which("git")
+    if git:
+        executable = Path(git)
+        directory = executable.parent
+        root = None
+        if executable.name.lower() == "git.exe":
+            if directory.name.lower() == "cmd":
+                root = directory.parent
+            elif directory.name.lower() == "bin":
+                root = directory.parent
+                if root.name.lower() == "mingw64":
+                    root = root.parent
+        if root:
+            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+                bash = root / relative
+                if bash.is_file():
+                    return bash
+    raise AssertionError("Git Bash is required to verify the actual Claude Skill wrapper on Windows")
+
+
 async def smoke(build_result, *, previous_artifact=None, previous_sha256=None):
     build = json.loads(build_result.read_text(encoding="utf-8"))
     archive = Path(build["artifact"])
@@ -149,10 +171,7 @@ async def smoke(build_result, *, previous_artifact=None, previous_sha256=None):
             assert runtime["version"] == initial_version
             wrapper = Path(installed["skill"]["skill_dir"]) / "scripts/rmg.sh"
             if os.name == "nt":
-                git = shutil.which("git")
-                bash = Path(git).parent.parent / "bin/bash.exe" if git else None
-                if not bash or not bash.is_file():
-                    raise AssertionError("Git Bash is required to verify the actual Claude Skill wrapper on Windows")
+                bash = _git_bash()
                 skill_runtime = await invoke([str(bash), "--noprofile", "--norc", wrapper.as_posix()], "runtime-info")
             else:
                 skill_runtime = await invoke(["/bin/sh", str(wrapper)], "runtime-info")

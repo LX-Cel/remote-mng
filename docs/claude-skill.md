@@ -136,4 +136,4 @@ rmg skill status --claude-dir /path/to/claude-config --json
 
 原始资源位于 `src/remote_mng/assets/claude_skill/remote-mng/`。手工复制原始目录时，源包装脚本调用 PATH 中的 `rmg`，因此必须确保 Claude 能找到工具。安装器生成的版本绑定本机 Python 路径或独立包稳定入口，不适合直接复制到另一台机器；换机器后在当地重新安装。
 
-当前实现与支持边界见 [0.4 验收记录](v04-validation.md)；记录中的本地测试不代表本轮 GitHub 发布流水线已经通过。[0.3 验证](v03-validation.md)、[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 是各自版本的历史验收，不代表新版功能已经按同一条件全部验证。
+当前 [0.4.0 为预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，需按固定版本安装；默认查新只选择正式发布。实现、实际 CI 结果、制品来源与支持边界见 [0.4 验收记录](v04-validation.md)。[0.3 验证](v03-validation.md)、[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 是各自版本的历史验收，不代表新版功能已经按同一条件全部验证。

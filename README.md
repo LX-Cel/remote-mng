@@ -6,7 +6,7 @@
 
 工具随包提供 Claude Code Skill，主入口是 `rmg` CLI。Skill 告诉 Agent 如何检查条件、记录步骤、保存任务 ID，以及如何处理断线和结果不明。MCP 保留为可选适配层，默认使用不需要配置 MCP。remote-mng 本身不内置模型，也不替代项目的构建脚本和业务验证规则。
 
-当前代码版本 **0.4.0，个人试用阶段**。仓库暂为私有，源码和 Release 都需要 GitHub 访问权限。正式发行以 [Releases](https://github.com/LX-Cel/remote-mng/releases) 中的资产和验证记录为准。0.4 的正式发布门槛包含 Windows、Linux 构建及对应更新验收；存在 tag、能下载 Actions 制品或本地测试通过，都不等于正式发行已完成。若发行标记为预发布，应先阅读其中列出的平台限制。
+当前发布为 **[v0.4.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，供个人试用**。Linux 的完整更新和回退验收已通过；Windows 包的安装与分发验收通过，但受限宿主中的完整自动更新尚未通过，仅验证了提前阻碍并保留原状态。具体来源及摘要见 [0.4 验收记录](docs/v04-validation.md)。仓库保持私有，下载需要访问权限；此版本不标记为 Latest，默认查新不会将预发布当作正式更新，请按下方固定版本安装。
 
 ## 它解决什么问题
 
@@ -192,7 +192,7 @@ uv run --frozen python scripts/build_release.py
 uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json
 ```
 
-[发布流水线](.github/workflows/release.yml) 在 Windows 和 Ubuntu 22.04 上执行测试、构建及实际制品验证，核对上一正式版的升级/回退，并运行真实 uv 环境到独立更新器的交接与离线回退。源码前驱夹具使用当前实现加测试版本号，不冒充历史正式版。默认 CI 要求完整更新成功；受限宿主的 `passed_blocked_safely` 专项诊断不能替代发布门槛。0.4 的最终跨平台发行结果以这次正式流水线记录为准，失败时保留诊断制品，不自动发布。
+[发布流水线](.github/workflows/release.yml) 在 Windows 和 Ubuntu 22.04 上执行测试、构建及实际制品验证，核对上一正式版的升级/回退，并运行真实 uv 环境到独立更新器的交接与离线回退。源码前驱夹具使用当前实现加测试版本号，不冒充历史正式版。默认 CI 要求完整更新成功；受限宿主的 `passed_blocked_safely` 专项诊断不能替代正式发布门槛。本次 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/34837889845) 全部通过，[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053) 的 Linux 通过、Windows 未通过，因此以明确标注限制的预发布形式提供试用，未放宽正式自动发布条件。
 
 ## 许可证
 

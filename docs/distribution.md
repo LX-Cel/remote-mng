@@ -109,7 +109,7 @@ uv run --frozen python scripts/smoke_release.py --build-result dist/release/buil
 
 smoke 的 Python 充当测试服务器与断言工具；被测 CLI、后台 daemon、Skill 绑定来自独立包，使用隔离安装和状态目录。分发层覆盖含中文、空格与单引号的路径、SSH 返回码、SFTP、Telnet 去重和兼容回退；Linux 还运行真实 detached helper 作业并核对副作用恰好一次。worker 层另验证真实更新进程、管理器停启、进度页和离线回退，GitHub 传输使用固定本地资产夹具，不替换安装器或管理器。边界与实际结果见 [0.4 验收记录](v04-validation.md)。
 
-`.github/workflows/release.yml` 配置在 Windows 和 Ubuntu 22.04 构建，默认要求真实前驱的分发升级、worker 更新和 uv 更新／回退全部通过。手动工作流仅保存 Actions artifacts，tag 推送在两平台成功后创建 release，并附带安装脚本及摘要；仓库继续保持私有。0.4.0 本轮发布流水线尚待运行，此文不把本地验收或工作流配置当作 GitHub Actions 已通过。
+`.github/workflows/release.yml` 配置在 Windows 和 Ubuntu 22.04 构建，默认要求真实前驱的分发升级、worker 更新和 uv 更新／回退全部通过。手动工作流仅保存 Actions artifacts，tag 推送在两平台成功后创建正式 release，并附带安装脚本及摘要；仓库继续保持私有。[0.4.0 本轮发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053) 的 Linux 全部通过、Windows 未通过，正式自动发布未执行；当前提供的是明确标注限制的 [v0.4.0 预发布](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)。Linux 包来自通过验收的 CI，Windows 包来自同提交的干净本机构建及已记录的分发/保护验收，不是失败的 Windows CI 制品。完整来源与摘要见 [验收记录](v04-validation.md)。
 
 0.4.0 本地 Windows 分发层验收通过；当前 Codex 宿主中的 worker 自动更新受到嵌套 Job Object 限制，已验证会提前报告阻碍并保留原状态，结果标记为 `passed_blocked_safely`，不能称为自动更新成功。发布 CI 不使用这个诊断模式替代完整成功条件。普通终端也须经过实际检查，预启动不能保证后续更新进程具有相同权限。
 

@@ -1,6 +1,23 @@
 # 0.4.0 更新机制验收记录
 
-日期：2026-09-14。以下记录是发布前的本地 0.4.0 候选快照；最终 GitHub 制品以所选 Release 的摘要和对应 Actions 记录为准。
+日期：2026-09-14。本文分别记录实际发布结果和此前的本地候选快照，两者的制品摘要不同。
+
+## 实际发布：v0.4.0 预发布
+
+[v0.4.0 Release](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0) 基于干净提交 `231df53459512480c72ac468ed37d77e7733ed02`，保持私有，标记为预发布且不是 Latest。发布资产包含两平台 ZIP、Linux CI 的通用 wheel、安装脚本、各自摘要、汇总 `SHA256SUMS.txt` 和脱敏的 `release-validation.json`。没有修改正式自动发布门槛。
+
+- [基础 CI 34837889845](https://github.com/LX-Cel/remote-mng/actions/runs/34837889845)：Windows/Linux × Python 3.11/3.12/3.13 六组全部通过。
+- [发行验收 34837898053](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053)：Ubuntu 22.04 的构建、正式旧版分发升级/回退、真实 worker 更新/恢复、uv 交接及离线回退全部通过。前驱 ZIP 是 GitHub 正式 0.3.0 Linux 资产。
+- Windows CI 的分发测试遇到 Git Bash 路径定位问题，worker 测试被旧管理器独立启动限制阻止，uv 测试在独立创建预检处收到 WinError 5。正式发布 job 未执行。Git Bash 的 `mingw64/bin/git.exe` 定位随后已在主分支测试脚本修复，并在 Windows/WSL 各通过 9 条回归；该修改不涉及发行包的产品源码。
+- 发布的 Windows ZIP 来自上述同一干净提交的本机构建。真实正式 0.3.0 的分发升级/回退、Git Bash/Skill、SSH/SFTP/Telnet 和历史任务验收通过。worker 和 uv 验收分别为 `passed_blocked_safely`（35.21 秒、22.25 秒），验证原管理器、安装和任务在阻碍后保留，未证明完整自动更新成功。没有使用失败的 Windows CI ZIP。
+
+| 实际发布资产 | SHA256 |
+| --- | --- |
+| Windows ZIP | `754c7ed9da4df771b8ddb418515ca025d203ac10708b144c000dc9518f751c9f` |
+| Linux ZIP（glibc 2.35 基线） | `0e66c42ec4b6e428803775ed31ca31454160153c61758ab29ca161fce7fdf28d` |
+| 通用 wheel | `6b30f199beafc8e96b44c807d66cf425dbc25f1477a3315cdb8cdc0489ddb033` |
+
+以下为此前本地 r2 候选快照；不要将其摘要用于下载的 Release 资产。
 
 ## 交付范围
 
