@@ -378,3 +378,53 @@ def test_packaged_skill_resources_can_be_installed(tmp_path):
     assert (skill / "scripts/rmg.sh").is_file()
     assert list((skill / "references").glob("*.md"))
     installer.uninstall_skill(root)
+
+
+def test_user_extension_is_preserved_across_upgrade_and_uninstall(claude_dir, source, monkeypatch):
+    extension = claude_dir / "remote-mng" / "USER.md"
+    assert installer.skill_status()["user_extension"] == {
+        "path": str(extension), "exists": False, "state": "absent", "managed": False}
+    assert not claude_dir.exists()
+    extension.parent.mkdir(parents=True)
+    extension.write_text("个人约定：部署完成后核对业务输出。\n", encoding="utf-8")
+    expected = extension.read_bytes()
+    installer.install_skill()
+    assert installer.skill_status()["user_extension"]["state"] == "available"
+    extension.write_bytes(expected + b"Keep user instructions.\n")
+    assert installer.skill_status()["integrity"] == "verified"
+    monkeypatch.setattr(installer, "__version__", "99.1.0")
+    assert installer.install_skill()["action"] == "updated"
+    installer.uninstall_skill()
+    assert extension.read_bytes() == expected + b"Keep user instructions.\n"
+
+
+def test_packaged_skill_points_to_selected_extension_and_update_reference(tmp_path):
+    selected = tmp_path / "Claude 中文 with ' quote"
+    result = installer.install_skill(selected)
+    skill = Path(result["skill_dir"])
+    instructions = (skill / "SKILL.md").read_text(encoding="utf-8")
+    assert "{{RMG_USER_EXTENSION_JSON}}" not in instructions
+    extension_json = json.dumps((selected / "remote-mng" / "USER.md").as_posix(), ensure_ascii=False)
+    assert extension_json in instructions
+    assert "references/updates.md" in instructions
+    assert (skill / "references" / "updates.md").is_file()
+    assert not (selected / "remote-mng").exists()
+    manifest = json.loads((skill / installer.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert "USER.md" not in manifest["files"]
+    assert result["integrity"] == "verified"
+    assert installer.install_skill(selected)["action"] == "unchanged"
+
+
+def test_unsafe_user_extension_is_reported_without_breaking_managed_skill(claude_dir, source, tmp_path):
+    installer.install_skill()
+    extension = claude_dir / "remote-mng" / "USER.md"
+    extension.parent.mkdir()
+    target = tmp_path / "private-note.md"
+    target.write_text("Leave this file alone.", encoding="utf-8")
+    make_symlink(extension, target)
+    status = installer.skill_status()
+    assert status["integrity"] == "verified"
+    assert status["user_extension"]["state"] == "unreadable_or_unsafe"
+    assert installer.install_skill()["action"] == "unchanged"
+    installer.uninstall_skill()
+    assert target.read_text(encoding="utf-8") == "Leave this file alone."

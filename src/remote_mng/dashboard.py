@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hmac
 import inspect
+import json
 import re
 from importlib.resources import files
 
@@ -57,6 +58,19 @@ def _number(query, name, default, lower, upper):
     return int(value)
 
 
+def _can_recover(record, pending_id=None):
+    if (record.get("state") not in {"failed", "interrupted", "blocked"}
+            or record.get("recovery", {}).get("state") == "restored"):
+        return False
+    original = record.get("plan", {}).get("current_version")
+    if not isinstance(original, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", original):
+        return False
+    phases = {"quiescing", "activating", "verifying", "recovering"}
+    return (record.get("recovery", {}).get("state") == "needs_attention"
+            or record.get("id") == pending_id or record.get("last_state") in phases
+            or any(event.get("state") in phases for event in record.get("events", []) if isinstance(event, dict)))
+
+
 def install_dashboard(app, manager, ui_token, status_provider):
     """Install a bounded UI API. The token must differ from the daemon's RPC token.
 
@@ -83,7 +97,17 @@ def install_dashboard(app, manager, ui_token, status_provider):
                 supplied = request.headers.get("Authorization", "")
                 if not hmac.compare_digest(supplied.encode("utf-8"), ("Bearer " + ui_token).encode("utf-8")):
                     raise web.HTTPUnauthorized(text="Open the dashboard using rmg ui")
-            response = await handler(request)
+            counted = request.path.startswith("/ui/api/") and not (
+                request.path == "/ui/api/update" or request.path.startswith("/ui/api/update/"))
+            if counted and getattr(manager, "maintenance", False):
+                raise RemoteError("update_in_progress", "The manager is preparing an update; follow the update progress page")
+            if counted:
+                manager.active_requests = getattr(manager, "active_requests", 0) + 1
+            try:
+                response = await handler(request)
+            finally:
+                if counted:
+                    manager.active_requests -= 1
         except RemoteError as exc:
             status = 404 if exc.code in {"not_found", "task_not_found", "unknown_target"} else 400
             response = web.json_response({"ok": False, "error": _public(exc.as_dict())}, status=status)
@@ -178,6 +202,68 @@ def install_dashboard(app, manager, ui_token, status_provider):
     async def health(request):
         return result(await manager.dispatch("job.health", {"target": _name(request.match_info["name"])}))
 
+    async def update_body(request, allowed):
+        # Update commands accept a small, explicit intent, never executable code or a download URL.
+        content = bytearray()
+        async for chunk in request.content.iter_chunked(4096):
+            content.extend(chunk)
+            if len(content) > 4096:
+                raise web.HTTPRequestEntityTooLarge(max_size=4096, actual_size=len(content))
+        try:
+            body = json.loads(content or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            raise RemoteError("invalid_params", "A JSON update request is required") from None
+        if not isinstance(body, dict) or set(body) - allowed:
+            raise RemoteError("invalid_params", "Unsupported update parameter")
+        return body
+
+    async def update_state(request):
+        from . import updates
+        if set(request.query) - {"id"}:
+            raise RemoteError("invalid_params", "Update status accepts an optional update ID only")
+        params = {"home": manager.config.home}
+        if "id" in request.query:
+            params["update_id"] = _name(request.query["id"], task=True)
+        return result(await _resolve(updates.update_status(**params)))
+
+    async def update_check(request):
+        from . import updates
+        body = await update_body(request, {"repository", "tag"})
+        for field in body:
+            if not isinstance(body[field], str) or not body[field] or len(body[field]) > 200:
+                raise RemoteError("invalid_params", "Repository and tag must be short, nonempty strings")
+        return result(await _resolve(updates.check_update(home=manager.config.home, **body)))
+
+    async def update_start(request):
+        from . import updates
+        body = await update_body(request, {"plan_id"})
+        plan_id = _name(body.get("plan_id"), task=True)
+        # The updater resolves the recorded, checked plan and repeats readiness checks before stopping anything.
+        return result(await _resolve(updates.start_update(home=manager.config.home, plan_id=plan_id)))
+
+    async def update_rollback(request):
+        from . import updates
+        body = await update_body(request, {"version"})
+        version = body.get("version")
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+            raise RemoteError("invalid_params", "An explicit previously installed version is required")
+        state = await _resolve(updates.update_status(home=manager.config.home))
+        previous = state.get("installation", {}).get("previous_version")
+        if not previous or version != previous:
+            raise RemoteError("rollback_unavailable", "Only the recorded previous compatible version can be selected")
+        return result(await _resolve(updates.start_update(home=manager.config.home, rollback=True, version=version)))
+
+    async def update_recover(request):
+        from . import updates
+        body = await update_body(request, {"update_id"})
+        update_id = _name(body.get("update_id"), task=True)
+        state = await _resolve(updates.update_status(home=manager.config.home))
+        record = next((item for item in state.get("history", []) if item.get("id") == update_id), None)
+        pending_id = (state.get("pending_recovery") or {}).get("id")
+        if record is None or not _can_recover(record, pending_id):
+            raise RemoteError("recovery_unavailable", "Select a failed or interrupted update with a recorded recovery requirement")
+        return result(await _resolve(updates.recover_update(home=manager.config.home, update_id=update_id)))
+
     async def cleanup(request):
         id = _name(request.match_info["id"], task=True)
         task_record = await _resolve(manager.taskbook.get(id))
@@ -228,6 +314,11 @@ def install_dashboard(app, manager, ui_token, status_provider):
     app.router.add_get("/ui/", static)
     app.router.add_get("/ui/{asset:index.html|app.js|style.css}", static)
     app.router.add_get("/ui/api/overview", overview)
+    app.router.add_get("/ui/api/update", update_state)
+    app.router.add_post("/ui/api/update/check", update_check)
+    app.router.add_post("/ui/api/update/start", update_start)
+    app.router.add_post("/ui/api/update/rollback", update_rollback)
+    app.router.add_post("/ui/api/update/recover", update_recover)
     app.router.add_get("/ui/api/tasks/{id}", task)
     app.router.add_post("/ui/api/tasks/{id}/{action:refresh|cancel}", task_action)
     app.router.add_post("/ui/api/targets/{name}/check", check)

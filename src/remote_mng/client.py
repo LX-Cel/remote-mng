@@ -14,7 +14,7 @@ from filelock import FileLock
 from .config import home_path
 from .errors import RemoteError
 from . import __version__
-from .runtime import command_prefix, subprocess_environment
+from .runtime import command_prefix, subprocess_environment, process_context
 
 
 def runtime_dir(home: Path) -> Path:
@@ -79,6 +79,7 @@ class Client:
             return False
 
     async def ensure(self):
+        self._check_update_gate()
         info = self.info()
         if await self.healthy(info):
             return info
@@ -87,6 +88,7 @@ class Client:
         lock = FileLock(str(self.runtime / "startup.lock"), thread_local=False)
         await asyncio.to_thread(lock.acquire, timeout=20)
         try:
+            self._check_update_gate()
             info = self.info()
             if await self.healthy(info):
                 return info
@@ -102,8 +104,9 @@ class Client:
                 try:
                     process = subprocess.Popen(args, stdout=log, stderr=log, **kwargs)
                 except OSError as exc:
-                    raise RemoteError("daemon_start_failed", "This host cannot start an independent daemon. Run rmg server start in a separate terminal first.",
-                                      {"reason": "process_breakaway_not_permitted"}) from exc
+                    raise RemoteError("daemon_start_failed", "The independent daemon could not be created. Inspect the process error; when the host restricts independent processes, use a normal terminal.",
+                                      {"reason": "process_creation_failed", "winerror": getattr(exc, "winerror", None),
+                                       "errno": exc.errno, "process_context": process_context()}) from exc
             deadline = asyncio.get_running_loop().time() + 20
             while asyncio.get_running_loop().time() < deadline:
                 info = self.info()
@@ -116,6 +119,17 @@ class Client:
                               {"log": str(self.runtime / "daemon.log")})
         finally:
             lock.release()
+
+    def _check_update_gate(self):
+        gate = self.runtime / "update-switch.json"
+        if not gate.exists():
+            return
+        try:
+            update_id = json.loads(gate.read_text(encoding="utf-8"))["id"]
+        except (OSError, ValueError, KeyError):
+            update_id = None
+        if not update_id or os.environ.get("RMG_UPDATE_ID") != update_id:
+            raise RemoteError("update_in_progress", "An update owns daemon startup. Query rmg update status; do not repeat remote commands.", {"update_id": update_id})
 
     async def call(self, method, params=None):
         info = await self.ensure()

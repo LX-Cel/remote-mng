@@ -27,7 +27,7 @@ from filelock import FileLock, Timeout
 
 from .client import Client, runtime_dir
 from .errors import RemoteError
-from .runtime import CONTRACTS, external_environment, platform_tag, runtime_manifest, subprocess_environment, wait_process_exit
+from .runtime import CONTRACTS, external_environment, platform_tag, runtime_manifest, subprocess_environment
 from . import skill_install
 
 MANIFEST = "rmg-release.json"
@@ -36,6 +36,7 @@ _VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?\Z")
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
 _MAX_BYTES = 2 * 1024**3
 _MAX_FILES = 30000
+_EXPECTED_UNSET = object()
 
 
 def _fail(code, message, **details):
@@ -224,7 +225,8 @@ def installation_status(install_dir=None):
         return {**result, "installed": current is not None, "current_version": current,
                 "previous_version": data.get("previous_version"), "versions": versions,
                 "launcher": str(root / "bin" / ("rmg.ps1" if os.name == "nt" else "rmg")),
-                "contracts": data.get("contracts"), "updated_at": data.get("updated_at")}
+                "contracts": data.get("contracts"), "updated_at": data.get("updated_at"),
+                "source": data.get("source")}
     except (OSError, ValueError, TypeError) as exc:
         _fail("invalid_installation", "Installation state could not be read safely", reason=str(exc))
 
@@ -319,31 +321,129 @@ async def _health(directory, manifest):
         setup_result = await asyncio.to_thread(_process, [*prefix, "setup", "--claude-dir", str(claude)], cwd=test_root)
         if setup_result.get("state") != "ready":
             _fail("candidate_health_failed", "Candidate Skill or doctor did not pass")
-        client = Client(home, autostart=False)
+        await _probe_daemon(prefix, manifest, home, test_root)
+    return {"runtime": "passed", "skill": "passed", "daemon": "passed", "dashboard": "passed", "crypto": "passed",
+            "daemon_probe": "owned_process", "independent_start": "not_checked"}
+
+
+def _probe_output(path):
+    try:
+        with path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 2048))
+            return log.read(2048).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+async def _finish_probe(process, client):
+    """Reap only the exact child we created, never a PID found in server.json."""
+    forced = False
+    if process.poll() is None:
+        info = client.info()
+        if info and info.get("pid") == process.pid:
+            try:
+                status = await client.request(info, "server.status", timeout=3)
+                if status.get("pid") == process.pid:
+                    await client.request(info, "server.stop", timeout=5)
+            except Exception:
+                # A lost response can still mean the child accepted shutdown.
+                # Malformed candidate HTTP output must not skip child reaping.
+                pass
         try:
-            await asyncio.to_thread(_process, [*prefix, "server", "start"], cwd=test_root)
-            status = await client.request(client.info(), "server.status", timeout=5)
-            if status.get("version") != manifest["version"]:
-                _fail("candidate_health_failed", "Candidate daemon version did not match")
-            ui = await client.request(client.info(), "server.ui", timeout=5)
+            await asyncio.to_thread(process.wait, timeout=10)
+        except subprocess.TimeoutExpired:
+            forced = True
+            # This is a bounded health probe owned by its Popen handle. It must
+            # never outlive the installer, including after invalid HTTP output.
+            process.terminate()
+            try:
+                await asyncio.to_thread(process.wait, timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                await asyncio.to_thread(process.wait, timeout=5)
+    else:
+        await asyncio.to_thread(process.wait, timeout=0)
+    return {"forced": forced, "exit_code": process.returncode}
+
+
+async def _probe_daemon(prefix, manifest, home, test_root, *, startup_timeout=20):
+    """Run the candidate daemon as a bounded child; production startup is separate.
+
+    A health probe only needs to live until this function returns. Directly
+    owning ``server run`` avoids asking an old candidate CLI to detach another
+    process; no production daemon flags or host containment are changed.
+    """
+    client = Client(home, autostart=False)
+    process = None
+    failure = None
+    cleanup = None
+    log_path = test_root / "candidate-daemon.log"
+    with log_path.open("wb") as log:
+        try:
+            process = subprocess.Popen([*prefix, "server", "run"], cwd=test_root,
+                env=subprocess_environment(independent=True), stdin=subprocess.DEVNULL,
+                stdout=log, stderr=log, close_fds=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            deadline = asyncio.get_running_loop().time() + startup_timeout
+            while True:
+                if process.poll() is not None:
+                    _fail("candidate_health_failed", "Candidate daemon exited before becoming ready", phase="daemon_start",
+                          pid=process.pid, exit_code=process.returncode)
+                info = client.info()
+                if info:
+                    if info.get("pid") != process.pid:
+                        _fail("candidate_health_failed", "Candidate daemon record does not identify the owned process", phase="daemon_identity")
+                    try:
+                        status = await client.request(info, "server.status", timeout=3)
+                    except RemoteError:
+                        status = None
+                    if status:
+                        if status.get("pid") != process.pid or status.get("version") != manifest["version"]:
+                            _fail("candidate_health_failed", "Candidate daemon HTTP identity does not match its process and release", phase="daemon_identity")
+                        break
+                if asyncio.get_running_loop().time() >= deadline:
+                    _fail("candidate_health_failed", "Candidate daemon did not publish a responding owned endpoint", phase="daemon_start", pid=process.pid)
+                await asyncio.sleep(0.1)
+            ui = await client.request(info, "server.ui", timeout=5)
+            from urllib.parse import urlsplit
+            url = ui.get("url", "").split("#", 1)[0]
+            parsed = urlsplit(url)
+            if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port != info.get("port")
+                    or parsed.path != "/ui/"):
+                _fail("candidate_health_failed", "Candidate dashboard endpoint does not belong to the owned daemon", phase="dashboard")
             import aiohttp
             async with aiohttp.ClientSession(trust_env=False) as web:
-                async with web.get(ui["url"].split("#", 1)[0], timeout=aiohttp.ClientTimeout(total=10)) as response:
+                async with web.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False) as response:
                     if response.status != 200 or "<html" not in (await response.text()).lower():
-                        _fail("candidate_health_failed", "Candidate dashboard resource could not be served")
+                        _fail("candidate_health_failed", "Candidate dashboard resource could not be served", phase="dashboard")
+        except BaseException as exc:
+            failure = exc
         finally:
-            if client and client.info() and await client.healthy(client.info()):
-                daemon_pid = client.info()["pid"]
-                await client.request(client.info(), "server.stop", timeout=5)
-                for _ in range(100):
-                    if not client.info():
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    _fail("candidate_health_failed", "Candidate test daemon did not stop; candidate was not activated")
-                if not await wait_process_exit(daemon_pid):
-                    _fail("candidate_health_failed", "Candidate test daemon did not release its runtime files")
-    return {"runtime": "passed", "skill": "passed", "daemon": "passed", "dashboard": "passed", "crypto": "passed"}
+            if process is not None:
+                try:
+                    finishing = asyncio.create_task(_finish_probe(process, client))
+                    try:
+                        cleanup = await asyncio.shield(finishing)
+                    except asyncio.CancelledError as exc:
+                        cleanup = await finishing
+                        if failure is None:
+                            failure = exc
+                except BaseException as exc:
+                    if failure is None:
+                        failure = exc
+    output = _probe_output(log_path)
+    if failure is not None:
+        if isinstance(failure, asyncio.CancelledError):
+            raise failure
+        details = dict(failure.details) if isinstance(failure, RemoteError) else {"phase": "daemon_probe"}
+        details.update(output=output, cleanup=cleanup)
+        if isinstance(failure, OSError):
+            details.update(winerror=getattr(failure, "winerror", None), errno=failure.errno)
+        raise RemoteError("candidate_health_failed", str(failure) if isinstance(failure, RemoteError)
+                          else "Candidate daemon probe could not complete", details) from failure
+    if cleanup and (cleanup["forced"] or cleanup["exit_code"] != 0):
+        _fail("candidate_health_failed", "Candidate daemon did not shut down cleanly", phase="daemon_stop", cleanup=cleanup, output=output)
 
 
 def _launchers(root, home=None):
@@ -454,7 +554,7 @@ async def setup(home=None, claude_dir=None, *, binding=None, start_daemon=False)
             "remote_connections": False, "automatic_restart": False, "daemon": daemon}
 
 
-async def _activate(root, directory, manifest, home, claude_dir, health):
+async def _activate(root, directory, manifest, home, claude_dir, health, source=None):
     before = installation_status(root)
     binding = _launchers(root, home)
     if os.name == "nt":
@@ -481,7 +581,7 @@ async def _activate(root, directory, manifest, home, claude_dir, health):
             _fail("candidate_health_failed", "Installed candidate doctor did not pass")
         _json(root / ".remote-mng-install.json", {"format": 1, "managed_by": OWNER, "contracts": CONTRACTS,
             "previous_version": old_pointer if old_pointer != manifest["version"] else before["previous_version"],
-            "updated_at": time.time(), "home": str(home), "claude_dir": str(skill_root)})
+            "updated_at": time.time(), "home": str(home), "claude_dir": str(skill_root), "source": source})
         return {"action": "installed" if old_pointer is None else "unchanged" if old_pointer == manifest["version"] else "upgraded",
                 **installation_status(root), "health": health, "skill": result["skill"],
                 "data_migrated": False, "daemon_restarted": False, "remote_helpers_changed": False,
@@ -504,40 +604,204 @@ async def _activate(root, directory, manifest, home, claude_dir, health):
         raise
 
 
-async def install_artifact(archive, sha256, *, install_dir=None, home=None, claude_dir=None):
+def _release_source(source, version, sha256=None):
+    """Normalize authenticated release identity; never infer it from a filename."""
+    if source is None:
+        return None
+    if not isinstance(source, dict):
+        _fail("invalid_release_source", "Release source must be an object")
+    repository, tag, asset, digest = (source.get(key) for key in ("repository", "tag", "asset", "sha256"))
+    if (not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+            or tag != "v" + version or not isinstance(asset, str)
+            or not re.fullmatch(r"[A-Za-z0-9._-]+\.zip", asset)
+            or not isinstance(digest, str) or not _HASH.fullmatch(digest)):
+        _fail("invalid_release_source", "Release repository, exact tag, ZIP asset and SHA256 must match the candidate")
+    if sha256 is not None and digest.lower() != sha256.lower():
+        _fail("invalid_release_source", "Release source SHA256 does not match the verified archive")
+    return {"repository": repository, "tag": tag, "asset": asset, "sha256": digest.lower()}
+
+
+def _source_path(root, version):
+    directory = root / "version-sources"
+    _safe_path(directory)
+    path = directory / (_version(version) + ".json")
+    _safe_path(path)
+    return path
+
+
+def _saved_source(root, version):
+    path = _source_path(root, version)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("managed_by") != OWNER or data.get("version") != version:
+            raise ValueError("unexpected source owner or version")
+        return _release_source(data.get("source"), version)
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        _fail("invalid_release_source", "Saved release source is unreadable", reason=str(exc))
+
+
+def _remember_source(root, version, source):
+    if source is None:
+        return _saved_source(root, version)
+    old = _saved_source(root, version)
+    if old is not None and old != source:
+        _fail("release_source_conflict", "This retained version already has a different pinned release source")
+    path = _source_path(root, version)
+    path.parent.mkdir(exist_ok=True, mode=0o700)
+    _json(path, {"managed_by": OWNER, "version": version, "source": source})
+    return source
+
+
+def _prepared_path(root, version):
+    directory = root / "prepared"
+    _safe_path(directory)
+    path = directory / (_version(version) + ".json")
+    _safe_path(path)
+    return path
+
+
+def _save_prepared(root, directory, manifest, health, source):
+    source = _remember_source(root, manifest["version"], source)
+    prepared = {"version": manifest["version"], "directory": str(directory),
+                "manifest": manifest, "health": health, "source": source}
+    path = _prepared_path(root, manifest["version"])
+    path.parent.mkdir(exist_ok=True, mode=0o700)
+    _json(path, {"format": 1, "managed_by": OWNER, "prepared": prepared})
+    return prepared
+
+
+def _validated_prepared(root, prepared):
+    if not isinstance(prepared, dict):
+        _fail("invalid_prepared_release", "Prepared release must be an object")
+    version = _version(prepared.get("version"))
+    directory = root / "versions" / version
+    _safe_path(directory)
+    if prepared.get("directory") != str(directory):
+        _fail("invalid_prepared_release", "Prepared release must use its managed version directory")
+    manifest = _manifest(directory)
+    if manifest["version"] != version or manifest["platform"] != platform_tag():
+        _fail("invalid_prepared_release", "Prepared release identity does not match this installation")
+    _verify(directory, manifest)
+    source = _release_source(prepared.get("source"), version)
+    if source != _saved_source(root, version):
+        _fail("invalid_prepared_release", "Prepared source does not match the retained version source")
+    try:
+        record = json.loads(_prepared_path(root, version).read_text(encoding="utf-8"))
+        if (record.get("format") != 1 or record.get("managed_by") != OWNER
+                or record.get("prepared") != prepared or prepared.get("manifest") != manifest
+                or not isinstance(prepared.get("health"), dict) or not prepared["health"]):
+            raise ValueError("prepared release differs from its verified preparation record")
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        _fail("invalid_prepared_release", "Prepare the candidate again before activation", reason=str(exc))
+    return directory, manifest, source
+
+
+async def _prepare_archive_locked(root, archive, sha256, source):
+    stage = root / f".stage-{uuid.uuid4().hex}"
+    stage.mkdir(mode=0o700)
+    try:
+        manifest = await asyncio.to_thread(_extract, archive, sha256, stage)
+        source = _release_source(source, manifest["version"], sha256)
+        final = root / "versions" / manifest["version"]
+        _safe_path(final)
+        if final.exists():
+            existing = _manifest(final)
+            _verify(final, existing)
+            if existing != manifest:
+                _fail("release_conflict", "This version is already installed with different bytes; use a new version")
+        else:
+            stage.rename(final)
+        health = await _health(final, manifest)
+        return _save_prepared(root, final, manifest, health, source)
+    finally:
+        if stage.exists():
+            _remove_stage(stage, root)
+
+
+async def prepare_artifact(archive, sha256, *, install_dir=None, home=None, claude_dir=None, source=None):
+    """Verify and probe a candidate without changing the running user installation.
+
+    The isolated candidate may start its own temporary daemon. The user's daemon,
+    launcher pointer, Skill and database are not stopped or modified here.
+    """
+    root = _root(install_dir)
+    _selected_context(root, home, claude_dir)
+    try:
+        with _prepare(root):
+            return await _prepare_archive_locked(root, Path(archive).expanduser().absolute(), sha256, source)
+    except Timeout as exc:
+        raise RemoteError("installation_busy", "Another installation owns this directory") from exc
+    except OSError as exc:
+        raise RemoteError("installation_failed", "Candidate preparation failed; active installation was retained",
+                          {"reason": str(exc)}) from exc
+
+
+async def prepare_rollback(version=None, *, install_dir=None, home=None, claude_dir=None):
+    """Probe a compatible retained version before the caller stops its manager."""
+    root = _root(install_dir)
+    _selected_context(root, home, claude_dir)
+    try:
+        with _prepare(root):
+            status = installation_status(root)
+            selected = _version(version or status["previous_version"])
+            directory = root / "versions" / selected
+            manifest = _manifest(directory)
+            if manifest["version"] != selected or manifest["platform"] != platform_tag():
+                _fail("platform_mismatch", "Rollback candidate does not match this version and platform")
+            _verify(directory, manifest)
+            health = await _health(directory, manifest)
+            return _save_prepared(root, directory, manifest, health, _saved_source(root, selected))
+    except Timeout as exc:
+        raise RemoteError("installation_busy", "Another installation owns this directory") from exc
+    except OSError as exc:
+        raise RemoteError("installation_failed", "Rollback candidate preparation failed", {"reason": str(exc)}) from exc
+
+
+async def _activate_prepared_locked(root, prepared, home, claude_dir):
+    directory, manifest, source = _validated_prepared(root, prepared)
+    actual_home = await _precheck(home, claude_dir)
+    actual_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _safe_path(actual_home / "runtime")
+    runtime = runtime_dir(actual_home)
+    _safe_path(runtime / "daemon.lock")
+    if (runtime / "daemon.lock").exists() and (runtime / "daemon.lock").stat().st_nlink != 1:
+        _fail("unsafe_install_path", "Daemon lock must not be a hard link")
+    with FileLock(str(runtime / "daemon.lock"), timeout=0):
+        return await _activate(root, directory, manifest, actual_home, claude_dir, prepared["health"], source)
+
+
+async def activate_prepared(prepared, *, install_dir=None, home=None, claude_dir=None,
+                            expected_current_version=_EXPECTED_UNSET):
+    """Reverify persisted preparation and activate only after the user daemon stops."""
+    root = _root(install_dir)
+    home, claude_dir = _selected_context(root, home, claude_dir)
+    try:
+        with _prepare(root):
+            if expected_current_version is not _EXPECTED_UNSET:
+                if expected_current_version is not None:
+                    _version(expected_current_version)
+                current = installation_status(root)["current_version"]
+                if current != expected_current_version:
+                    _fail("installation_changed", "Another installer changed the selected version; this prepared release was not activated",
+                          expected_version=expected_current_version, current_version=current)
+            return await _activate_prepared_locked(root, prepared, home, claude_dir)
+    except Timeout as exc:
+        raise RemoteError("installation_busy", "Another installation or daemon owns the selected state") from exc
+    except OSError as exc:
+        raise RemoteError("installation_failed", "Activation failed; existing versions were retained", {"reason": str(exc)}) from exc
+
+
+async def install_artifact(archive, sha256, *, install_dir=None, home=None, claude_dir=None, source=None):
     archive = Path(archive).expanduser().absolute()
     root = _root(install_dir)
     home, claude_dir = _selected_context(root, home, claude_dir)
     actual_home = await _precheck(home, claude_dir)
-    stage = root / f".stage-{uuid.uuid4().hex}"
     try:
         with _prepare(root):
-            stage.mkdir(mode=0o700)
-            try:
-                manifest = await asyncio.to_thread(_extract, archive, sha256, stage)
-                final = root / "versions" / manifest["version"]
-                _safe_path(final)
-                if final.exists():
-                    existing = _manifest(final)
-                    _verify(final, existing)
-                    if existing != manifest:
-                        _fail("release_conflict", "This version is already installed with different bytes; use a new version")
-                else:
-                    stage.rename(final)
-                health = await _health(final, manifest)
-                actual_home = await _precheck(actual_home, claude_dir)
-                actual_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-                _safe_path(actual_home / "runtime")
-                runtime = runtime_dir(actual_home)
-                _safe_path(runtime / "daemon.lock")
-                if (runtime / "daemon.lock").exists() and (runtime / "daemon.lock").stat().st_nlink != 1:
-                    _fail("unsafe_install_path", "Daemon lock must not be a hard link")
-                # The daemon uses the same lock, closing the restart race.
-                with FileLock(str(runtime / "daemon.lock"), timeout=0):
-                    return await _activate(root, final, manifest, actual_home, claude_dir, health)
-            finally:
-                if stage.exists():
-                    _remove_stage(stage, root)
+            prepared = await _prepare_archive_locked(root, archive, sha256, source)
+            return await _activate_prepared_locked(root, prepared, actual_home, claude_dir)
     except Timeout as exc:
         raise RemoteError("installation_busy", "Another installation or daemon owns the selected state; no forced stop was attempted") from exc
     except OSError as exc:
@@ -566,7 +830,7 @@ async def rollback_install(*, install_dir=None, home=None, claude_dir=None, vers
             if (runtime / "daemon.lock").exists() and (runtime / "daemon.lock").stat().st_nlink != 1:
                 _fail("unsafe_install_path", "Daemon lock must not be a hard link")
             with FileLock(str(runtime / "daemon.lock"), timeout=0):
-                result = await _activate(root, directory, manifest, actual_home, claude_dir, health)
+                result = await _activate(root, directory, manifest, actual_home, claude_dir, health, _saved_source(root, selected))
                 return {**result, "action": "rolled_back", "rollback_scope": "compatible_program_and_managed_skill_only"}
     except Timeout as exc:
         raise RemoteError("installation_busy", "Another installation or daemon owns the selected state") from exc

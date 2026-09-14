@@ -45,6 +45,8 @@ class Manager:
         self.tasks = set()
         self.closing = False
         self.opening = 0
+        self.maintenance = False
+        self.active_requests = 0
         from .taskbook import TaskBook
         self.taskbook = TaskBook(self)
         self.step_tasks = {}
@@ -58,6 +60,34 @@ class Manager:
         return task
 
     async def dispatch(self, method, params=None):
+        if self.maintenance:
+            raise RemoteError("update_in_progress", "The manager is reserved for an update; query update status before starting more work")
+        self.active_requests += 1
+        try:
+            return await self._dispatch(method, params)
+        finally:
+            self.active_requests -= 1
+
+    def update_readiness(self):
+        """Only local ownership matters here; remote durable jobs keep running."""
+        blockers = []
+        if self.sessions or self.opening:
+            blockers.append({"code": "active_sessions", "count": len(self.sessions) + self.opening,
+                             "ids": sorted(self.sessions)})
+        background = sum(not task.done() for task in self.tasks)
+        if background or self.active_requests:
+            blockers.append({"code": "active_operations", "count": background + self.active_requests})
+        return {"ready": not blockers, "blockers": blockers, "maintenance": self.maintenance,
+                "durable_jobs": "continue_remotely", "remote_checked": False}
+
+    def prepare_update(self):
+        readiness = self.update_readiness()
+        if not readiness["ready"]:
+            raise RemoteError("update_blocked", "Finish or explicitly close active local work before updating", readiness)
+        self.maintenance = True
+        return self.update_readiness()
+
+    async def _dispatch(self, method, params=None):
         methods = {
             "target.list": self.target_list, "target.put": self.config.put,
             "target.remove": self.config.remove, "target.check": self.target_check,

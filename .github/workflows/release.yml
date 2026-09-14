@@ -4,6 +4,10 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      previous_tag:
+        description: 'Optional pinned baseline; defaults to the newest earlier stable release'
+        required: false
 
 permissions:
   contents: read
@@ -26,15 +30,65 @@ jobs:
       - run: uv run --frozen pytest -q
       - id: build_bundle
         run: uv run --frozen python scripts/build_release.py
-      - run: uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json
+      - name: Verify tag matches the built package
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -c 'import json,os; from pathlib import Path; version=json.loads(Path("dist/release/build-result.json").read_text())["version"]; assert os.environ["RELEASE_TAG"] == "v" + version, "Release tag must match package version"'
+      - name: Download the actual previous release for acceptance
+        id: prepare_baseline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASELINE_TAG: ${{ inputs.previous_tag || '' }}
+        run: |
+          platform=$(python -c 'import json; from pathlib import Path; print(json.loads(Path("dist/release/build-result.json").read_text())["platform"])')
+          if [ -z "$BASELINE_TAG" ]; then
+            gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName > dist/release/baselines.json
+            BASELINE_TAG=$(python -c 'import json,re; from pathlib import Path; build=json.loads(Path("dist/release/build-result.json").read_text()); current=tuple(map(int,build["version"].split("."))); tags=[r["tagName"] for r in json.loads(Path("dist/release/baselines.json").read_text()) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+",r["tagName"])]; candidates=[(tuple(map(int,t[1:].split("."))),t) for t in tags if tuple(map(int,t[1:].split("."))) < current]; assert candidates, "No earlier stable release found; supply previous_tag explicitly"; print(max(candidates)[1])')
+          fi
+          echo "Upgrade acceptance baseline: $BASELINE_TAG"
+          baseline_version=${BASELINE_TAG#v}
+          archive="dist/previous/remote-mng-${baseline_version}-${platform}.zip"
+          gh release download "$BASELINE_TAG" --pattern "remote-mng-${baseline_version}-${platform}.zip" --pattern "remote-mng-${baseline_version}-${platform}.zip.sha256" --dir dist/previous
+          digest=$(python -c 'import sys; from pathlib import Path; print(Path(sys.argv[1]).read_text().split()[0])' "$archive.sha256")
+          python -c 'import json,sys; from pathlib import Path; archive,digest,version,platform=sys.argv[1:]; Path("dist/previous/build-result.json").write_text(json.dumps({"artifact":str(Path(archive).resolve()),"sha256":digest,"version":version,"platform":platform}))' "$archive" "$digest" "$baseline_version" "$platform"
+      - name: Exercise actual previous release installation and rollback
+        if: always() && steps.prepare_baseline.outcome == 'success'
+        shell: bash
+        run: |
+          archive=$(python -c 'import json; from pathlib import Path; print(json.loads(Path("dist/previous/build-result.json").read_text())["artifact"])')
+          digest=$(python -c 'import json; from pathlib import Path; print(json.loads(Path("dist/previous/build-result.json").read_text())["sha256"])')
+          uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json --previous-artifact "$archive" --previous-sha256 "$digest"
+      - name: Exercise independent update worker and manager recovery
+        if: always() && steps.prepare_baseline.outcome == 'success'
+        run: uv run --frozen python scripts/smoke_update.py --build-result dist/release/build-result.json --previous-build-result dist/previous/build-result.json
+      - name: Exercise uv update process handoff and offline recovery
+        if: always() && steps.build_bundle.outcome == 'success'
+        run: uv run --frozen python scripts/smoke_source_update.py --build-result dist/release/build-result.json
       - uses: actions/upload-artifact@v4
         if: always() && steps.build_bundle.outcome == 'success'
         with:
           name: remote-mng-${{ runner.os }}-${{ runner.arch }}
           path: |
             dist/release/*.zip
-            dist/release/*.sha256
+            dist/release/*.zip.sha256
+            dist/release/*.release.json
             dist/release/build-result.json
+            dist/release/smoke-result.json
+            dist/release/worker-smoke-result.json
+            dist/release/source-worker-smoke-result.json
+      - name: Retain one canonical universal Python package
+        uses: actions/upload-artifact@v4
+        if: always() && steps.build_bundle.outcome == 'success' && runner.os == 'Linux'
+        with:
+          name: remote-mng-python-wheel
+          path: |
+            dist/release/*.whl
+            dist/release/*.whl.sha256
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -43,13 +97,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: Include bootstrap installers and their checksums
+        run: |
+          cp scripts/install-release.sh scripts/install-release.ps1 artifacts/
+          cd artifacts
+          sha256sum install-release.sh > install-release.sh.sha256
+          sha256sum install-release.ps1 > install-release.ps1.sha256
       - name: Publish pinned private-repository assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.zip artifacts/*.sha256 --verify-tag --generate-notes
+        run: gh release create "$RELEASE_TAG" artifacts/*.zip artifacts/*.whl artifacts/*.sha256 artifacts/*.release.json artifacts/install-release.sh artifacts/install-release.ps1 --verify-tag --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"

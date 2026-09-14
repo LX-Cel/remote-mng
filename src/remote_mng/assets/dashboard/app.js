@@ -22,6 +22,10 @@
   let selectedLog = null;
   let offset = 0;
   let overviewBusy = false;
+  let updateBusy = false;
+  let updateSnapshot = null;
+  let updatePlan = null;
+  let acceptedUpdate = null;
   let logBusy = false;
   let logGeneration = 0;
   const rendered = new Map();
@@ -32,6 +36,10 @@
     ready: "检查通过", disconnected: "连接已断开", closed: "已关闭", observed: "已观察到结果",
     dispatching: "正在提交", cancel_requested: "已请求取消",
     not_checked: "尚未检查", completed: "已完成", submitted: "已提交", uncertain: "结果待确认",
+    up_to_date: "已是所选最新版本", blocked: "等待处理", queued: "准备更新", downloading: "正在下载",
+    preparing: "验证候选版本", quiescing: "等待管理器停止", activating: "切换版本",
+    handoff: "正在交接更新进程",
+    verifying: "验证更新结果", recovering: "正在恢复", rolled_back: "已回退", interrupted: "更新中断",
   };
   const stateName = (state) => stateNames[state] || state || "尚未确认";
   const tone = (state) => ["ready", "succeeded", "observed", "completed"].includes(state) ? "good"
@@ -86,6 +94,155 @@
   const bytes = (value) => typeof value !== "number" ? "尚未测量"
     : value < 1024 ? value + " B" : value < 1048576 ? (value / 1024).toFixed(1) + " KiB"
       : value < 1073741824 ? (value / 1048576).toFixed(1) + " MiB" : (value / 1073741824).toFixed(1) + " GiB";
+
+  function localUpdateUrl(value, path) {
+    const url = new URL(value, location.href);
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.pathname !== path
+        || url.username || url.password || !url.hash.startsWith("#token=")) {
+      throw new Error("更新已受理，但没有返回有效的本地进度链接。请让 Agent 查询更新记录。");
+    }
+    return url.href;
+  }
+
+  function updateMessage(value) {
+    if (typeof value === "string") return value;
+    if (!value) return "";
+    return value.message || value.advice || value.code || value.reason || JSON.stringify(value);
+  }
+
+  function canRecoverUpdate(record, pending) {
+    const phases = new Set(["quiescing", "activating", "verifying", "recovering"]);
+    return ["failed", "interrupted", "blocked"].includes(record.state) && record.recovery?.state !== "restored"
+      && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(record.plan?.current_version || "")
+      && (record.recovery?.state === "needs_attention" || pending?.id === record.id || phases.has(record.last_state)
+        || (record.events || []).some((event) => phases.has(event.state)));
+  }
+
+  function renderUpdates(value) {
+    updateSnapshot = value;
+    updatePlan = value.latest_plan || null;
+    const installation = value.installation || {};
+    const components = value.components || {};
+    const types = {managed: "独立安装包", standalone: "独立安装包", distribution: "独立安装包", source: "源码安装", source_checkout: "源码工作区", python_environment: "Python 环境安装", uv: "uv 工具安装", uv_tool: "uv 工具安装", unknown: "安装方式待确认"};
+    const kind = installation.kind || installation.type || value.installation_type;
+    const facts = $("update-components");
+    facts.replaceChildren();
+    const data = el("dl", null, "facts");
+    addFact(data, "安装方式", types[kind] || kind || "待确认");
+    const source = installation.repository || installation.source?.repository || installation.origin?.repository;
+    addFact(data, "更新来源", typeof source === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(source) ? source : "尚未记录 GitHub 发布来源");
+    for (const [name, label] of [["cli", "CLI"], ["daemon", "运行中的管理器"], ["skill", "Claude Skill"]]) {
+      const part = components[name];
+      const version = typeof part === "string" ? part : part?.version;
+      const fallback = name === "cli" ? installation.current_version || value.current_version : name === "daemon" ? snapshot?.server?.version : null;
+      addFact(data, label, version || fallback || "尚未确认");
+      if (part?.advice) addFact(data, label + " 提示", part.advice);
+    }
+    if (components.helper?.advice) addFact(data, "远端 helper", components.helper.advice);
+    facts.append(data);
+    const plan = $("update-plan");
+    plan.replaceChildren();
+    $("update-summary").textContent = updatePlan ? stateName(updatePlan.state) : "尚未检查新版。点击“检查新版”后显示目标版本与更新影响。";
+    if (acceptedUpdate) $("update-summary").textContent = `更新 ID · ${acceptedUpdate.id} · ${stateName(acceptedUpdate.state)}${acceptedUpdate.monitor_url ? "" : " · 可继续查询此记录"}`;
+    if (value.pending_recovery) {
+      plan.append(el("p", `更新 ${value.pending_recovery.id} 需要恢复。${updateMessage(value.pending_recovery.advice) || "请在下方更新记录中检查影响并恢复此更新。"}`, "advice"));
+      $("update-history").open = true;
+    }
+    if (!updatePlan) {
+      for (const blocker of value.blockers || []) plan.append(el("p", updateMessage(blocker), "advice"));
+    }
+    if (updatePlan) {
+      const info = el("div", null, "update-release");
+      info.append(el("h3", `${updatePlan.current_version || installation.current_version || "当前版本"} → ${updatePlan.target_version || "待确认"}`));
+      if (updatePlan.checked_at || updatePlan.created_at) info.append(el("p", "检查时间 · " + stamp(updatePlan.checked_at || updatePlan.created_at), "small"));
+      if (updatePlan.release?.notes) {
+        const details = el("details");
+        details.append(el("summary", "版本说明"), el("pre", updatePlan.release.notes, "release-notes"));
+        info.append(details);
+      }
+      const blockers = [...(updatePlan.blockers || updatePlan.readiness?.blockers || []), ...(value.blockers || [])];
+      for (const item of new Set(blockers.map(updateMessage))) info.append(el("p", item, "advice"));
+      for (const item of [updatePlan.advice, updatePlan.compatibility?.advice, value.advice]) {
+        if (item) info.append(el("p", updateMessage(item), "small"));
+      }
+      if (updatePlan.state === "ready") info.append(el("p", "安装将更新程序与托管 Skill，并在确认空闲后重启本地管理器。进度会在独立页面继续显示；完成后请开启新的 Claude 会话加载 Skill。", "advice"));
+      plan.append(info);
+    }
+    $("install-update").hidden = updatePlan?.state !== "ready" || !updatePlan?.id;
+    $("install-update").disabled = updateBusy;
+    $("check-update").disabled = updateBusy;
+    $("rollback-update").hidden = !installation.previous_version;
+    $("rollback-update").disabled = updateBusy;
+    $("rollback-update").textContent = installation.previous_version ? "回退到 " + installation.previous_version : "回退上一版本";
+    const historyList = $("update-history-list");
+    historyList.replaceChildren();
+    const records = value.history || [];
+    if (!records.length) historyList.append(empty("还没有更新记录。"));
+    for (const record of records.slice(0, 10)) {
+      const row = el("div", null, "activity-row");
+      const info = el("div");
+      info.append(el("strong", `${(record.action || record.plan?.action) === "rollback" ? "回退" : "更新"} · ${record.target_version || record.plan?.target_version || "版本待确认"}`), el("p", `${record.id || ""} · ${stamp(record.updated_at || record.created_at)}`));
+      if (record.error) info.append(el("p", updateMessage(record.error), "advice"));
+      if (record.advice) info.append(el("p", updateMessage(record.advice), "small"));
+      if (record.monitor_url) info.append(button("打开独立进度页", () => {
+        try { location.assign(localUpdateUrl(record.monitor_url, "/update/")); }
+        catch (error) { notice(error.message + " 更新 ID：" + record.id); }
+      }));
+      if (canRecoverUpdate(record, value.pending_recovery)) {
+        const recover = button("恢复此更新", () => {
+          if (!confirm(`确认恢复更新 ${record.id} 之前的 ${record.plan.current_version} 版本？将核对恢复记录，并可能停止和重启本地管理器。保留配置与远端任务 ID，不回退数据库或远端部署，也不重发业务命令。`)) return;
+          runUpdateAction("recover", {update_id: record.id});
+        });
+        recover.disabled = updateBusy;
+        info.append(recover);
+      }
+      row.append(info, badge(record.state));
+      historyList.append(row);
+    }
+  }
+
+  async function refreshUpdates() {
+    if (updateBusy || !token) return;
+    try {
+      const value = await api("update");
+      if (acceptedUpdate) {
+        const observed = (value.history || []).find((record) => record.id === acceptedUpdate.id);
+        if (observed) {
+          const needsMonitor = !acceptedUpdate.monitor_url && observed.monitor_url;
+          acceptedUpdate = observed;
+          if (needsMonitor) location.assign(localUpdateUrl(observed.monitor_url, "/update/"));
+        }
+      }
+      renderUpdates(value);
+    }
+    catch (error) { $("update-summary").textContent = error.message; }
+  }
+
+  async function runUpdateAction(action, body) {
+    if (updateBusy) return;
+    updateBusy = true;
+    if (updateSnapshot) renderUpdates(updateSnapshot);
+    try {
+      const value = await api("update/" + action, "POST", body);
+      if (action === "check") {
+        acceptedUpdate = null;
+        renderUpdates({...updateSnapshot, latest_plan: value});
+        notice();
+      } else {
+        acceptedUpdate = value;
+        if (value.monitor_url) {
+          $("update-summary").textContent = "更新已受理，正在打开独立进度页…";
+          location.assign(localUpdateUrl(value.monitor_url, "/update/"));
+        } else if (value.action === "unchanged") {
+          notice("当前已是所选版本，无需安装。检查记录 ID：" + value.id);
+        } else {
+          const done = ["succeeded", "failed", "rolled_back", "blocked", "interrupted", "cancelled"].includes(value.state);
+          notice(`更新 ID：${value.id} · ${stateName(value.state)}。${done ? updateMessage(value.error) || updateMessage(value.advice) || "结果已记录，可让 Agent 查询此 ID。" : "请求已受理，独立进度页仍在准备。此页会继续查询原记录，请勿重复启动。"}`);
+        }
+      }
+    } catch (error) { notice(error.message); }
+    finally { updateBusy = false; if (updateSnapshot) renderUpdates(updateSnapshot); }
+  }
   const stageNames = {dns: "解析地址", tcp: "连接端口", proxy: "连接代理", jump: "连接跳板",
     host_key: "核验主机身份", authentication: "认证", login: "登录流程", login_flow: "登录流程",
     shell: "确认 Shell", sftp: "建立文件通道", transfer: "传输文件"};
@@ -332,6 +489,7 @@
       renderActivities(snapshot.operations, "operations", "operation");
       renderActivities(snapshot.sessions, "sessions", "session");
       await refreshTask();
+      await refreshUpdates();
     } catch (error) {
       $("connection-state").textContent = "状态读取中断，保留上次记录";
       $("connection-dot").className = "dot offline";
@@ -386,6 +544,16 @@
   }
 
   $("refresh-overview").addEventListener("click", async () => { notice(); await refreshOverview(); });
+  $("check-update").addEventListener("click", () => runUpdateAction("check", {}));
+  $("install-update").addEventListener("click", () => {
+    if (updatePlan?.state !== "ready" || !updatePlan.id) return;
+    runUpdateAction("start", {plan_id: updatePlan.id});
+  });
+  $("rollback-update").addEventListener("click", () => {
+    const version = updateSnapshot?.installation?.previous_version;
+    if (!version || !confirm(`确认回退到 ${version}？会在空闲时重启本地管理器，并恢复兼容的程序与托管 Skill。数据库、远端 helper 和部署内容保持当前状态。`)) return;
+    runUpdateAction("rollback", {version});
+  });
   $("refresh-task").addEventListener("click", async () => {
     $("refresh-task").disabled = true;
     try { await refreshTask(true); await refreshOverview(); }

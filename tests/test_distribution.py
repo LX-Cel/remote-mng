@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import sys
 import zipfile
 
 import pytest
+from filelock import FileLock
 
 from remote_mng import distribution as dist, runtime, skill_install
 from remote_mng.errors import RemoteError
@@ -316,3 +318,394 @@ async def test_unknown_database_schema_refuses_switch(tmp_path, paths, simulated
 def test_download_requires_fixed_identity_and_checksum(tmp_path, repo, tag, asset, digest):
     with pytest.raises(RemoteError):
         dist.download_release(repo, tag, asset, digest, tmp_path / "artifact.zip")
+
+
+def release_source(version, digest):
+    return {"repository": "owner/private-repo", "tag": "v" + version,
+            "asset": f"remote-mng-{version}-{runtime.platform_tag()}.zip", "sha256": digest}
+
+
+@pytest.mark.asyncio
+async def test_prepare_online_keeps_daemon_pointer_skill_and_database(tmp_path, paths, simulated_candidate, monkeypatch):
+    archive, digest = artifact(tmp_path)
+    installed = await dist.install_artifact(archive, digest, **paths)
+    skill = Path(installed["skill"]["skill_dir"])
+    skill_bytes = {p.relative_to(skill).as_posix(): p.read_bytes() for p in skill.rglob("*") if p.is_file()}
+    server_file = paths["home"] / "runtime/server.json"
+    server_file.write_text('{"port":12345,"token":"test"}')
+    original = server_file.read_bytes()
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Preparation must not query or stop the user's daemon")
+
+    monkeypatch.setattr(dist.Client, "request", forbidden)
+    archive, digest = artifact(tmp_path, "1.1.0")
+    source = release_source("1.1.0", digest)
+    prepared = await dist.prepare_artifact(archive, digest, source=source, **paths)
+    assert json.loads(json.dumps(prepared)) == prepared
+    assert prepared["version"] == "1.1.0" and prepared["source"] == source
+    assert simulated_candidate == ["1.0.0", "1.1.0"]
+    assert dist.installation_status(paths["install_dir"])["current_version"] == "1.0.0"
+    assert server_file.read_bytes() == original
+    assert {p.relative_to(skill).as_posix(): p.read_bytes() for p in skill.rglob("*") if p.is_file()} == skill_bytes
+
+
+@pytest.mark.asyncio
+async def test_prepared_activation_persists_source_and_rollback_restores_it(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    original_source = release_source("1.0.0", digest)
+    await dist.install_artifact(archive, digest, source=original_source, **paths)
+    archive, digest = artifact(tmp_path, "1.1.0")
+    source = release_source("1.1.0", digest)
+    prepared = await dist.prepare_artifact(archive, digest, source=source, **paths)
+    result = await dist.activate_prepared(json.loads(json.dumps(prepared)), **paths)
+    assert result["source"] == source
+    assert result["current_version"] == "1.1.0"
+    assert result["daemon_restarted"] is False and result["remote_helpers_changed"] is False
+    rollback = await dist.prepare_rollback(**paths)
+    assert rollback["source"] == original_source
+    restored = await dist.activate_prepared(rollback, **paths)
+    assert restored["source"] == original_source and restored["current_version"] == "1.0.0"
+    assert simulated_candidate == ["1.0.0", "1.1.0", "1.0.0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["directory", "manifest", "health", "source"])
+async def test_prepared_arguments_cannot_replace_verified_record(tmp_path, paths, simulated_candidate, field):
+    archive, digest = artifact(tmp_path)
+    prepared = await dist.prepare_artifact(archive, digest, source=release_source("1.0.0", digest), **paths)
+    if field == "directory":
+        prepared[field] = str(tmp_path / "outside")
+    elif field == "manifest":
+        prepared[field] = {**prepared[field], "version": "9.9.9"}
+    elif field == "health":
+        prepared[field] = {"pretend": "passed"}
+    else:
+        prepared[field] = {**prepared[field], "repository": "another/repo"}
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, **paths)
+    assert error.value.code == "invalid_prepared_release"
+    assert not dist.installation_status(paths["install_dir"])["installed"]
+    assert not skill_install.skill_status(paths["claude_dir"])["installed"]
+
+
+@pytest.mark.asyncio
+async def test_prepared_files_are_reverified_before_activation(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    prepared = await dist.prepare_artifact(archive, digest, **paths)
+    (Path(prepared["directory"]) / "_internal/resource.txt").write_text("changed")
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, **paths)
+    assert error.value.code == "release_integrity_failed"
+    assert not dist.installation_status(paths["install_dir"])["installed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [("tag", "v2.0.0"), ("sha256", "a" * 64),
+                                        ("asset", "../release.zip"), ("repository", "owner/repo;evil")])
+async def test_release_source_must_match_verified_archive_before_health(tmp_path, paths, simulated_candidate, field, value):
+    archive, digest = artifact(tmp_path)
+    source = {**release_source("1.0.0", digest), field: value}
+    with pytest.raises(RemoteError) as error:
+        await dist.prepare_artifact(archive, digest, source=source, **paths)
+    assert error.value.code == "invalid_release_source"
+    assert simulated_candidate == []
+
+
+@pytest.mark.asyncio
+async def test_activate_prepared_still_refuses_running_daemon(tmp_path, paths, simulated_candidate, monkeypatch):
+    archive, digest = artifact(tmp_path)
+    prepared = await dist.prepare_artifact(archive, digest, **paths)
+    runtime_dir = paths["home"] / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "server.json").write_text('{"port":12345,"token":"test"}')
+
+    async def healthy(*args):
+        return True
+
+    async def status(self, info, method, **kwargs):
+        assert method == "server.status"
+        return {"sessions": 0, "version": "0.2.0"}
+
+    monkeypatch.setattr(dist.Client, "healthy", healthy)
+    monkeypatch.setattr(dist.Client, "request", status)
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, **paths)
+    assert error.value.code == "upgrade_daemon_running"
+    assert not dist.installation_status(paths["install_dir"])["installed"]
+
+
+@pytest.mark.asyncio
+async def test_missing_preparation_record_is_not_a_health_bypass(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    prepared = await dist.prepare_artifact(archive, digest, **paths)
+    dist._prepared_path(paths["install_dir"], prepared["version"]).unlink()
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, **paths)
+    assert error.value.code == "invalid_prepared_release"
+
+
+@pytest.mark.asyncio
+async def test_source_is_preserved_by_legacy_reinstall_and_rollback(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    source = release_source("1.0.0", digest)
+    await dist.install_artifact(archive, digest, source=source, **paths)
+    reinstalled = await dist.install_artifact(archive, digest, **paths)
+    assert reinstalled["source"] == source
+    archive, digest = artifact(tmp_path, "1.1.0")
+    await dist.install_artifact(archive, digest, **paths)
+    rollback = await dist.rollback_install(**paths)
+    assert rollback["source"] == source
+
+
+@pytest.mark.asyncio
+async def test_daemon_start_race_blocks_prepared_activation(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    prepared = await dist.prepare_artifact(archive, digest, **paths)
+    runtime_dir = paths["home"] / "runtime"
+    runtime_dir.mkdir(parents=True)
+    # A daemon owns its lock before publishing server.json. The precheck alone
+    # cannot observe it yet, so activation must also acquire this same lock.
+    with FileLock(str(runtime_dir / "daemon.lock"), timeout=0):
+        with pytest.raises(RemoteError) as error:
+            await dist.activate_prepared(prepared, **paths)
+    assert error.value.code == "installation_busy"
+    assert not dist.installation_status(paths["install_dir"])["installed"]
+
+
+@pytest.mark.asyncio
+async def test_existing_version_provenance_cannot_be_reassigned(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    source = release_source("1.0.0", digest)
+    await dist.install_artifact(archive, digest, source=source, **paths)
+    with pytest.raises(RemoteError) as error:
+        await dist.prepare_artifact(archive, digest, source={**source, "repository": "different/repository"}, **paths)
+    assert error.value.code == "release_source_conflict"
+    assert dist.installation_status(paths["install_dir"])["source"] == source
+
+
+@pytest.mark.asyncio
+async def test_failed_prepared_activation_retains_previous_provenance(tmp_path, paths, simulated_candidate, monkeypatch):
+    archive, digest = artifact(tmp_path)
+    source = release_source("1.0.0", digest)
+    await dist.install_artifact(archive, digest, source=source, **paths)
+    archive, digest = artifact(tmp_path, "1.1.0")
+    prepared = await dist.prepare_artifact(archive, digest, source=release_source("1.1.0", digest), **paths)
+
+    def failing(*args, **kwargs):
+        raise RemoteError("candidate_health_failed", "simulated setup failure")
+
+    monkeypatch.setattr(dist, "_process", failing)
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, **paths)
+    assert error.value.code == "candidate_health_failed"
+    status = dist.installation_status(paths["install_dir"])
+    assert status["source"] == source and status["current_version"] == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_prepared_activation_detects_competing_installer_under_lock(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    await dist.install_artifact(archive, digest, **paths)
+    archive, digest = artifact(tmp_path, "1.1.0")
+    prepared = await dist.prepare_artifact(archive, digest, **paths)
+    # A separate installation completed after update planning/preparation.
+    archive, digest = artifact(tmp_path, "1.2.0")
+    await dist.install_artifact(archive, digest, **paths)
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, expected_current_version="1.0.0", **paths)
+    assert error.value.code == "installation_changed"
+    assert error.value.details == {"expected_version": "1.0.0", "current_version": "1.2.0"}
+    assert dist.installation_status(paths["install_dir"])["current_version"] == "1.2.0"
+    assert skill_install.skill_status(paths["claude_dir"])["package_version"] == "1.2.0"
+
+
+@pytest.mark.asyncio
+async def test_prepared_activation_can_require_no_existing_installation(tmp_path, paths, simulated_candidate):
+    archive, digest = artifact(tmp_path)
+    prepared = await dist.prepare_artifact(archive, digest, **paths)
+    result = await dist.activate_prepared(prepared, expected_current_version=None, **paths)
+    assert result["current_version"] == "1.0.0"
+    with pytest.raises(RemoteError) as error:
+        await dist.activate_prepared(prepared, expected_current_version=None, **paths)
+    assert error.value.code == "installation_changed"
+
+
+@pytest.fixture
+def owned_probe(monkeypatch):
+    import aiohttp
+
+    state = {"methods": [], "waits": [], "terminated": False, "killed": False,
+             "record_pid": 4321, "http_pid": 4321, "version": "1.0.0", "http_status": 200,
+             "html": "<html>candidate</html>", "stop_hangs": False, "url": "http://127.0.0.1:23456/ui/#token=fixture"}
+
+    class Process:
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            state["waits"].append(timeout)
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("owned fixture", timeout)
+            return self.returncode
+
+        def terminate(self):
+            state["terminated"] = True
+            self.returncode = -15
+
+        def kill(self):
+            state["killed"] = True
+            self.returncode = -9
+
+    process = Process()
+
+    def popen(command, **kwargs):
+        state["command"], state["popen_options"] = command, kwargs
+        assert command[-2:] == ["server", "run"]
+        assert kwargs["stdin"] == subprocess.DEVNULL and kwargs["stdout"] is kwargs["stderr"]
+        assert kwargs["close_fds"] is True
+        assert kwargs["creationflags"] == (subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        return process
+
+    class ProbeClient:
+        def __init__(self, home, autostart):
+            assert autostart is False
+
+        def info(self):
+            return {"pid": state["record_pid"], "port": 23456, "token": "fixture"}
+
+        async def request(self, info, method, **kwargs):
+            state["methods"].append(method)
+            if method == "server.status":
+                return {"pid": state["http_pid"], "version": state["version"]}
+            if method == "server.ui":
+                return {"url": state["url"]}
+            assert method == "server.stop"
+            if not state["stop_hangs"]:
+                process.returncode = 0
+            return {"stopping": True}
+
+    class Response:
+        @property
+        def status(self):
+            return state["http_status"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def text(self):
+            return state["html"]
+
+    class Web(Response):
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
+
+        def get(self, url, **kwargs):
+            assert kwargs["allow_redirects"] is False
+            state["dashboard_requested"] = url
+            return Response()
+
+    monkeypatch.setattr(dist.subprocess, "Popen", popen)
+    monkeypatch.setattr(dist, "Client", ProbeClient)
+    monkeypatch.setattr(aiohttp, "ClientSession", Web)
+    return state, process
+
+
+async def test_owned_probe_runs_foreground_and_reaps_after_http_stop(tmp_path, owned_probe):
+    state, process = owned_probe
+    await dist._probe_daemon(["fixture-rmg", "--home", str(tmp_path / "state")], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert process.returncode == 0 and state["waits"] == [10]
+    assert "server.stop" in state["methods"] and "server.start" not in state["methods"]
+    assert not state["terminated"] and state["popen_options"]["stdout"].closed
+
+
+@pytest.mark.parametrize("field,value,phase", [("version", "9.0.0", "daemon_identity"),
+                                              ("http_status", 500, "dashboard"),
+                                              ("html", "not html", "dashboard"),
+                                              ("url", "https://other-host/ui/", "dashboard")])
+async def test_failed_owned_probe_still_stops_and_reaps(tmp_path, owned_probe, field, value, phase):
+    state, process = owned_probe
+    state[field] = value
+    with pytest.raises(RemoteError) as error:
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert error.value.code == "candidate_health_failed" and error.value.details["phase"] == phase
+    assert process.returncode == 0 and state["waits"]
+    assert state["popen_options"]["stdout"].closed
+
+
+@pytest.mark.parametrize("field", ["record_pid", "http_pid"])
+async def test_unknown_daemon_pid_is_never_stopped(tmp_path, owned_probe, field):
+    state, process = owned_probe
+    state[field] = 9876
+    with pytest.raises(RemoteError) as error:
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert error.value.code == "candidate_health_failed"
+    assert "server.stop" not in state["methods"]
+    assert state["terminated"] and process.returncode == -15 and state["waits"] == [10, 5]
+
+
+async def test_probe_forced_cleanup_is_not_reported_as_health_success(tmp_path, owned_probe):
+    state, process = owned_probe
+    state["stop_hangs"] = True
+    with pytest.raises(RemoteError) as error:
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert error.value.details["phase"] == "daemon_stop"
+    assert error.value.details["cleanup"]["forced"] is True
+    assert state["terminated"] and process.returncode == -15
+
+
+async def test_exited_probe_is_reaped_without_signalling(tmp_path, owned_probe):
+    state, process = owned_probe
+    process.returncode = 7
+    with pytest.raises(RemoteError) as error:
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert error.value.details["exit_code"] == 7
+    assert state["waits"] == [0] and not state["terminated"]
+
+
+async def test_probe_spawn_error_keeps_actual_os_diagnostic(tmp_path, owned_probe, monkeypatch):
+    def failing(*args, **kwargs):
+        error = OSError(22, "fixture spawn error")
+        error.winerror = 6
+        raise error
+
+    monkeypatch.setattr(dist.subprocess, "Popen", failing)
+    with pytest.raises(RemoteError) as error:
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert error.value.details["winerror"] == 6 and error.value.details["errno"] == 22
+    assert owned_probe[0]["waits"] == []
+
+
+async def test_cancelled_probe_reaps_before_propagating_cancellation(tmp_path, owned_probe, monkeypatch):
+    state, process = owned_probe
+    original = dist.Client.request
+
+    async def cancel(self, info, method, **kwargs):
+        if method == "server.ui":
+            raise asyncio.CancelledError()
+        return await original(self, info, method, **kwargs)
+
+    monkeypatch.setattr(dist.Client, "request", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert process.returncode == 0 and state["waits"]
+
+
+async def test_invalid_http_during_probe_cleanup_cannot_leak_child(tmp_path, owned_probe, monkeypatch):
+    state, process = owned_probe
+
+    async def malformed(*args, **kwargs):
+        raise ValueError("Invalid candidate JSON")
+
+    monkeypatch.setattr(dist.Client, "request", malformed)
+    with pytest.raises(RemoteError) as error:
+        await dist._probe_daemon(["fixture-rmg"], {"version": "1.0.0"}, tmp_path / "state", tmp_path)
+    assert error.value.code == "candidate_health_failed"
+    assert state["terminated"] and process.returncode == -15
+    assert state["waits"] == [10, 5]

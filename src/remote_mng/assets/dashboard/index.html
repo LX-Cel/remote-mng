@@ -22,6 +22,7 @@
         <div><span>需要关注</span><strong id="count-attention">—</strong><small>设备故障与任务待确认状态</small></div>
         <div><span>交互会话</span><strong id="count-sessions">—</strong><small>连接状态不等于任务状态</small></div>
       </section>
+      <section class="panel update-panel" aria-labelledby="update-title"><div class="panel-heading"><div><h2 id="update-title">工具更新</h2><p>按需检查发布版本；页面刷新只读取本地状态，不会连接 GitHub 或远端设备。</p></div><div class="actions"><button id="check-update">检查新版</button><button id="install-update" hidden>安装已检查的版本</button><button id="rollback-update" class="quiet" hidden>回退上一版本</button></div></div><div class="update-content"><p id="update-summary" role="status">正在读取本地安装状态…</p><div id="update-components" class="update-components"></div><div id="update-plan"></div><p class="small">更新保留配置与任务记录。远端 helper 按兼容要求另行处理；回退适用于兼容的程序与托管 Skill，不会回退数据库或远端部署。</p><details id="update-history"><summary>最近更新记录</summary><div id="update-history-list"></div></details></div></section>
       <section class="panel"><div class="panel-heading"><div><h2>需要关注</h2><p>把故障证据交给 Agent，继续查询或修复。</p></div></div><div id="attention" class="target-grid"></div></section>
       <section class="panel"><div class="panel-heading"><div><h2>设备</h2><p>展示最近一次检查；不会在后台自动探测设备。</p></div></div><div id="targets" class="target-grid"></div></section>
       <div class="work-grid">

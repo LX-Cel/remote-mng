@@ -58,8 +58,9 @@ class FakeManager:
 
 
 @pytest.fixture
-async def dashboard():
+async def dashboard(tmp_path):
     manager = FakeManager()
+    manager.config = SimpleNamespace(home=tmp_path / "custom-home")
     app = web.Application()
 
     async def unrelated(request):
@@ -301,3 +302,236 @@ async def test_attention_includes_stage_evidence_without_remote_probe(dashboard)
 def test_token_must_not_be_empty():
     with pytest.raises(ValueError):
         install_dashboard(web.Application(), FakeManager(), "", lambda: {})
+
+
+@pytest.fixture
+def update_backend(monkeypatch):
+    import remote_mng
+
+    calls = []
+    state = {"installation": {"kind": "standalone", "current_version": "0.3.0", "previous_version": "0.2.0"},
+             "components": {"cli": {"version": "0.3.0"}, "skill": {"version": "0.3.0"}},
+             "history": [], "latest_plan": None}
+
+    async def status(**params):
+        calls.append(("status", params))
+        return state
+
+    async def check(**params):
+        calls.append(("check", params))
+        return {"id": "plan-1", "state": "ready", "target_version": "0.4.0",
+                "release": {"notes": "<script>untrusted release notes</script>"}}
+
+    async def start(**params):
+        calls.append(("start", params))
+        if params.get("plan_id") == "not-checked":
+            raise RemoteError("update_plan_not_found", "Check a release before starting an update")
+        return {"id": "update-1", "state": "queued", "monitor_url": "http://127.0.0.1:9876/update/#token=dedicated-monitor"}
+
+    async def recover(**params):
+        calls.append(("recover", params))
+        return {"id": params["update_id"], "state": "recovering"}
+
+    backend = SimpleNamespace(update_status=status, check_update=check, start_update=start, recover_update=recover)
+    monkeypatch.setattr(remote_mng, "updates", backend, raising=False)
+    return calls, state, backend
+
+
+async def test_update_status_only_reads_local_state_in_selected_home(dashboard, update_backend):
+    client, manager = dashboard
+    calls, state, _ = update_backend
+    state["components"]["cli"]["control_token"] = "private-value"
+    response = await client.get("/ui/api/update", headers=auth(client))
+    assert response.status == 200
+    assert (await response.json())["result"]["installation"]["kind"] == "standalone"
+    assert "private-value" not in await response.text()
+    assert calls == [("status", {"home": manager.config.home})]
+    assert manager.calls == []
+    assert (await client.get("/ui/api/update?id=update-1", headers=auth(client))).status == 200
+    assert calls[-1] == ("status", {"home": manager.config.home, "update_id": "update-1"})
+
+
+async def test_update_check_is_explicit_and_does_not_start_installation(dashboard, update_backend):
+    client, manager = dashboard
+    calls, _, _ = update_backend
+    path = "/ui/api/update/check"
+    assert (await client.post(path, headers=auth(client), json={})).status == 403
+    assert calls == []
+    response = await client.post(path, headers=same_origin(client), json={"repository": "owner/repo", "tag": "v0.4.0"})
+    assert response.status == 200
+    assert (await response.json())["result"]["id"] == "plan-1"
+    assert calls == [("check", {"home": manager.config.home, "repository": "owner/repo", "tag": "v0.4.0"})]
+    assert manager.calls == []
+
+
+async def test_update_start_only_passes_checked_plan_and_returns_independent_monitor(dashboard, update_backend):
+    client, manager = dashboard
+    calls, _, _ = update_backend
+    response = await client.post("/ui/api/update/start", headers=same_origin(client), json={"plan_id": "plan-1"})
+    assert response.status == 200
+    assert (await response.json())["result"]["monitor_url"].endswith("/update/#token=dedicated-monitor")
+    assert calls == [("start", {"home": manager.config.home, "plan_id": "plan-1"})]
+    assert manager.calls == []
+    rejected = await client.post("/ui/api/update/start", headers=same_origin(client), json={"plan_id": "not-checked"})
+    assert rejected.status == 400
+    assert (await rejected.json())["error"]["code"] == "update_plan_not_found"
+
+
+@pytest.mark.parametrize("route,body", [
+    ("check", {"url": "https://evil.invalid/program"}),
+    ("check", {"repository": ["owner/repo"]}), ("check", {"tag": ""}),
+    ("check", {"home": "/another/home"}),
+    ("start", {}), ("start", {"plan_id": "../outside"}), ("start", {"plan_id": 123}),
+    ("start", {"plan_id": "plan-1", "command": "arbitrary command"}),
+    ("start", {"plan_id": "plan-1", "url": "https://evil.invalid/program"}),
+    ("start", {"plan_id": "plan-1", "targets": ["lab"]}),
+    ("rollback", {}), ("rollback", {"version": "latest"}),
+    ("rollback", {"version": "0.2.0", "force": True}),
+    ("recover", {}), ("recover", {"update_id": "../../outside"}),
+    ("recover", {"update_id": "update-1", "command": "untrusted"}),
+])
+async def test_update_routes_reject_unbounded_intents(dashboard, update_backend, route, body):
+    client, manager = dashboard
+    calls, _, _ = update_backend
+    response = await client.post("/ui/api/update/" + route, headers=same_origin(client), json=body)
+    assert response.status == 400
+    assert calls == []
+    assert manager.calls == []
+
+
+async def test_update_payload_is_small_and_requires_an_object(dashboard, update_backend):
+    client, _ = dashboard
+    calls, _, _ = update_backend
+    for data, expected in [("not json", 400), ("[]", 400), ('{"tag":"' + "x" * 5000 + '"}', 413)]:
+        response = await client.post("/ui/api/update/check", headers=same_origin(client), data=data)
+        assert response.status == expected
+    assert (await client.get("/ui/api/update?repository=owner/repo", headers=auth(client))).status == 400
+    assert calls == []
+
+
+async def test_rollback_requires_current_recorded_previous_version(dashboard, update_backend):
+    client, manager = dashboard
+    calls, state, _ = update_backend
+    path = "/ui/api/update/rollback"
+    assert (await client.post(path, headers=same_origin(client), json={"version": "0.1.0"})).status == 400
+    assert all(call[0] == "status" for call in calls)
+    response = await client.post(path, headers=same_origin(client), json={"version": "0.2.0"})
+    assert response.status == 200
+    assert calls[-1] == ("start", {"home": manager.config.home, "rollback": True, "version": "0.2.0"})
+    state["installation"]["previous_version"] = None
+    calls.clear()
+    assert (await client.post(path, headers=same_origin(client), json={"version": "0.2.0"})).status == 400
+    assert all(call[0] == "status" for call in calls)
+    assert manager.calls == []
+
+
+async def test_update_errors_never_expose_internal_credentials(dashboard, update_backend):
+    client, _ = dashboard
+    _, _, backend = update_backend
+
+    async def broken(**params):
+        raise RuntimeError("download failed with SECRET credential")
+
+    backend.check_update = broken
+    response = await client.post("/ui/api/update/check", headers=same_origin(client), json={})
+    assert response.status == 500
+    assert "SECRET" not in await response.text()
+
+
+async def test_dashboard_requests_are_counted_and_gated_during_maintenance(dashboard, update_backend):
+    client, manager = dashboard
+    observed = []
+
+    async def get_task(id, refresh=False):
+        observed.append(manager.active_requests)
+        raise RemoteError("task_not_found", "Missing task")
+
+    manager.taskbook.get = get_task
+    assert (await client.get("/ui/api/tasks/task-1", headers=auth(client))).status == 404
+    assert observed == [1]
+    assert manager.active_requests == 0
+    manager.maintenance = True
+    response = await client.post("/ui/api/targets/lab/check", headers=same_origin(client))
+    assert response.status == 400
+    assert (await response.json())["error"]["code"] == "update_in_progress"
+    assert manager.calls == []
+    assert (await client.get("/ui/api/update", headers=auth(client))).status == 200
+    assert manager.active_requests == 0
+
+
+async def test_dashboard_update_status_uses_real_updater_schema_without_network(dashboard, monkeypatch, tmp_path):
+    import os
+    import time
+    from remote_mng import updates
+
+    client, manager = dashboard
+    home = manager.config.home
+    home.mkdir()
+    root, claude = tmp_path / "installation", tmp_path / "claude"
+    monkeypatch.setattr(updates, "_context", lambda home=None, install_dir=None, claude_dir=None: (manager.config.home, root, claude))
+
+    def unexpected_network(*args, **kwargs):
+        raise AssertionError("Reading the dashboard must not discover releases")
+
+    monkeypatch.setattr(updates, "_release", unexpected_network)
+    directory = updates._directory(home, create=True)
+    plan = {"id": "c" * 32, "state": "ready", "current_version": "0.3.0", "target_version": "0.4.0"}
+    updates.dist._json(directory / "latest-plan.json", plan)
+    updates.dist._json(directory / ("update-" + "b" * 32 + ".json"), {
+        "id": "b" * 32, "state": "preparing", "pid": os.getpid(), "created_at": time.time(), "plan": plan})
+    response = await client.get("/ui/api/update", headers=auth(client))
+    assert response.status == 200
+    value = (await response.json())["result"]
+    assert value["installation"]["installed"] is True
+    assert value["installation"]["kind"] in {"uv_tool", "source_checkout", "python_environment"}
+    assert value["components"]["daemon"]["running"] is False
+    assert value["components"]["helper"]["state"] == "not_checked"
+    assert value["network_checked"] is False and value["remote_checked"] is False
+    assert value["latest_plan"] == plan
+    assert value["history"][0]["plan"]["target_version"] == "0.4.0"
+    assert manager.calls == []
+
+
+@pytest.mark.parametrize("record", [
+    {"id": "recover-1", "state": "running", "plan": {"current_version": "0.3.0"}, "recovery": {"state": "needs_attention"}},
+    {"id": "recover-1", "state": "failed", "plan": {"current_version": "0.3.0"}, "events": [{"state": "downloading"}]},
+    {"id": "recover-1", "state": "failed", "plan": {"current_version": "0.3.0"}, "recovery": {"state": "restored"}},
+    {"id": "recover-1", "state": "failed", "recovery": {"state": "needs_attention"}},
+])
+async def test_recovery_only_uses_failed_history_with_enough_recovery_evidence(dashboard, update_backend, record):
+    client, manager = dashboard
+    calls, state, _ = update_backend
+    state["history"] = [record]
+    response = await client.post("/ui/api/update/recover", headers=same_origin(client), json={"update_id": "recover-1"})
+    assert response.status == 400
+    assert (await response.json())["error"]["code"] == "recovery_unavailable"
+    assert all(name == "status" for name, _ in calls)
+    assert manager.calls == []
+
+
+@pytest.mark.parametrize("evidence", [{"recovery": {"state": "needs_attention"}},
+                                     {"last_state": "activating"}, {"events": [{"state": "quiescing"}]}])
+async def test_recovery_during_maintenance_is_explicit_and_stays_in_selected_home(dashboard, update_backend, evidence):
+    client, manager = dashboard
+    calls, state, _ = update_backend
+    manager.maintenance = True
+    state["history"] = [{"id": "recover-1", "state": "interrupted", "plan": {"current_version": "0.3.0"}, **evidence}]
+    path = "/ui/api/update/recover"
+    assert (await client.post(path, headers=auth(client), json={"update_id": "recover-1"})).status == 403
+    assert calls == []
+    response = await client.post(path, headers=same_origin(client), json={"update_id": "recover-1"})
+    assert response.status == 200
+    assert calls[-1] == ("recover", {"home": manager.config.home, "update_id": "recover-1"})
+    assert manager.calls == []
+
+
+async def test_recovery_requires_recorded_id_even_with_pending_recovery(dashboard, update_backend):
+    client, manager = dashboard
+    calls, state, _ = update_backend
+    state["pending_recovery"] = {"id": "recover-1", "state": "blocked"}
+    response = await client.post("/ui/api/update/recover", headers=same_origin(client), json={"update_id": "recover-1"})
+    assert response.status == 400
+    state["history"] = [{"id": "recover-1", "state": "blocked", "plan": {"current_version": "0.3.0"}}]
+    response = await client.post("/ui/api/update/recover", headers=same_origin(client), json={"update_id": "recover-1"})
+    assert response.status == 200
+    assert calls[-1] == ("recover", {"home": manager.config.home, "update_id": "recover-1"})

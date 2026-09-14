@@ -43,6 +43,22 @@ def external_environment():
     return env
 
 
+def process_context():
+    """Read process containment for diagnostics without changing its limits."""
+    if os.name != "nt":
+        return {"platform": "posix"}
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.GetCurrentProcess.restype = wintypes.HANDLE
+    api.IsProcessInJob.argtypes = (wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL))
+    api.IsProcessInJob.restype = wintypes.BOOL
+    value = wintypes.BOOL()
+    if not api.IsProcessInJob(api.GetCurrentProcess(), None, ctypes.byref(value)):
+        return {"platform": "windows", "in_job": None, "query_error": ctypes.get_last_error()}
+    return {"platform": "windows", "in_job": bool(value.value)}
+
+
 async def wait_process_exit(pid, timeout=10):
     """Wait for a known test daemon to release its files; never send a signal."""
     if os.name == "nt":
@@ -99,9 +115,11 @@ def runtime_manifest():
     key.public_key().verify(signature, b"remote-mng runtime check")
     base = resources.files("remote_mng").joinpath("assets")
     required = ("dashboard/index.html", "dashboard/app.js", "dashboard/style.css",
+                "dashboard/update.html", "dashboard/update.js",
                 "job-helper-v1.sh", "job-storage-v1.sh", "claude_skill/remote-mng/SKILL.md", "claude_skill/remote-mng/scripts/rmg.sh")
     available = {name: bool(base.joinpath(*name.split("/")).read_bytes()) for name in required}
     return {"version": __version__, "platform": platform_tag(), "frozen": bool(getattr(sys, "frozen", False)),
+            "process_context": process_context(),
             "command": command_prefix(), "contracts": dict(CONTRACTS), "resources": available,
             "crypto": "verified", "dependencies": {"asyncssh": asyncssh.__version__,
             "cryptography": cryptography.__version__, "telnetlib3": telnetlib3.__version__}}

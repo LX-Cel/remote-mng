@@ -12,6 +12,7 @@ import codecs
 import contextlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import shutil
@@ -25,6 +26,7 @@ from . import __version__
 
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled", "unknown"}
+UPDATE_TERMINAL_STATES = {"succeeded", "failed", "rolled_back", "blocked", "interrupted", "cancelled"}
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
@@ -86,6 +88,41 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--claude-dir")
     setup.add_argument("--start-daemon", action="store_true", help="Start the local manager during installation outside an Agent sandbox")
     setup.add_argument("--bind-command-json", help=argparse.SUPPRESS)
+    update = _sub(groups, "update", "Check, update or recover this installation without opening remote connections")
+    update.set_defaults(action="start", install_dir=None, claude_dir=None, repository=None, tag=None,
+                        plan_id=None, wait=False, wait_timeout=0.0)
+
+    def update_options(item, *, release=False, wait=False):
+        item.add_argument("--install-dir", default=argparse.SUPPRESS)
+        item.add_argument("--claude-dir", default=argparse.SUPPRESS)
+        if release:
+            item.add_argument("--repository", default=argparse.SUPPRESS, help="GitHub OWNER/REPO; defaults to the recorded release source")
+            item.add_argument("--tag", default=argparse.SUPPRESS, help="Exact release tag; omitted checks the newest stable release")
+        if wait:
+            item.add_argument("--wait", action="store_true", default=argparse.SUPPRESS,
+                              help="Poll the persistent local update record; Ctrl-C only stops waiting")
+            item.add_argument("--wait-timeout", type=float, default=argparse.SUPPRESS,
+                              help="Local wait deadline in seconds; 0 means no deadline")
+
+    update_options(update, release=True, wait=True)
+    update.add_argument("--plan-id", default=argparse.SUPPRESS, help="Install the exact plan returned by update check")
+    update_commands = update.add_subparsers(dest="action", metavar="{check,status,rollback,recover}")
+    check = _sub(update_commands, "check", "Discover a release and record its exact version, platform and digest")
+    update_options(check, release=True)
+    status = _sub(update_commands, "status", "Read installation components and update history, or one existing update")
+    update_options(status)
+    status.add_argument("--id", dest="update_id", help="Existing update ID to inspect; does not restart the update")
+    rollback = _sub(update_commands, "rollback", "Restore a retained compatible version through the update worker")
+    update_options(rollback, wait=True)
+    rollback.add_argument("--to-version", help="Retained version to restore; omitted selects the previous version")
+    recover = _sub(update_commands, "recover", "Recover an interrupted or failed update from retained local artifacts")
+    update_options(recover, wait=True)
+    recover.add_argument("--id", dest="update_id", required=True, help="Failed or interrupted update ID to recover without network access")
+    worker = update_commands.add_parser("_run", help=argparse.SUPPRESS)
+    _common(worker)
+    worker.add_argument("--id", dest="update_id", required=True)
+    update_commands._choices_actions = [action for action in update_commands._choices_actions if action.dest != "_run"]
+    update.set_defaults(action="start")
     distribution = _sub(groups, "distribution", "Manage versioned, verified personal installations")
     distributions = distribution.add_subparsers(dest="action", required=True)
     for action in ("status", "install", "rollback", "fetch"):
@@ -387,6 +424,24 @@ async def _wait_result(client: Client, result: dict[str, Any], *, method: str,
     return result
 
 
+async def _wait_update(result, *, home, install_dir, claude_dir, timeout):
+    """Observe the same persisted update; a timeout never resubmits or cancels it."""
+    from .updates import update_status
+    started = time.monotonic()
+    update_id = result.get("id")
+    if _state(result) not in UPDATE_TERMINAL_STATES and not update_id:
+        raise RemoteError("invalid_update_result", "The update response has no ID; inspect update status before retrying")
+    while _state(result) not in UPDATE_TERMINAL_STATES:
+        elapsed = time.monotonic() - started
+        if timeout and elapsed >= timeout:
+            return {**result, "wait_timed_out": True,
+                    "message": "Local wait timed out; the update continues independently. Query the same update ID."}
+        await asyncio.sleep(min(0.2, max(0, timeout - elapsed)) if timeout else 0.2)
+        result = await update_status(home=home, install_dir=install_dir, claude_dir=claude_dir,
+                                     update_id=update_id)
+    return result
+
+
 class TaskClient:
     """Attach the invocation to a task while leaving observation polling unwrapped."""
     def __init__(self, client, task_id, step_id, label=None):
@@ -419,7 +474,7 @@ def command_schema():
         options, commands = [], {}
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):
-                commands = {name: describe(sub) for name, sub in action.choices.items()}
+                commands = {name: describe(sub) for name, sub in action.choices.items() if not name.startswith("_")}
             elif action.dest != "help":
                 options.append({"name": action.dest, "flags": action.option_strings, "required": action.required,
                                 "choices": list(action.choices) if action.choices is not None else None,
@@ -442,6 +497,35 @@ async def dispatch(args: argparse.Namespace) -> Any:
         from .distribution import setup
         binding = json.loads(args.bind_command_json) if args.bind_command_json else None
         return await setup(args.home, args.claude_dir, binding=binding, start_daemon=args.start_daemon)
+    if args.group == "update":
+        from .updates import check_update, update_status, start_update, run_worker
+        if args.action == "_run":
+            return await run_worker(args.home, args.update_id)
+        options = {"home": args.home, "install_dir": args.install_dir, "claude_dir": args.claude_dir}
+        if args.task or args.step_id or args.label:
+            raise RemoteError("invalid_arguments", "Software updates use update IDs, not remote task or step IDs")
+        if args.action == "check":
+            return await check_update(**options, repository=args.repository, tag=args.tag)
+        if args.action == "status":
+            return await update_status(**options, update_id=args.update_id)
+        if not math.isfinite(args.wait_timeout) or args.wait_timeout < 0:
+            raise RemoteError("invalid_arguments", "--wait-timeout must be a finite non-negative number")
+        if args.action == "recover" and (args.plan_id or args.repository or args.tag):
+            raise RemoteError("invalid_arguments", "Recovery uses the existing update ID and cached artifacts; do not supply a release, repository or plan")
+        if args.plan_id and (args.repository or args.tag or args.action == "rollback"):
+            raise RemoteError("invalid_arguments", "--plan-id already fixes the release; do not combine it with a repository, tag or rollback")
+        if args.action == "recover":
+            from .updates import recover_update
+            result = await recover_update(**options, update_id=args.update_id)
+        else:
+            result = await start_update(**options, plan_id=args.plan_id, repository=args.repository, tag=args.tag,
+                                        rollback=args.action == "rollback", version=getattr(args, "to_version", None))
+        installation = result.get("installation") or result.get("plan", {}).get("installation") or result.get("source_prepared", {}).get("installation") or {}
+        if (args.wait and _state(result) not in UPDATE_TERMINAL_STATES and installation.get("kind") == "uv_tool"
+                and installation.get("prefix") and Path(installation["prefix"]).absolute() == Path(sys.prefix).absolute()):
+            return {**result, "wait_skipped": True,
+                    "advice": "This CLI uses the uv environment being replaced and must exit. Follow the monitor URL or query this update ID after it completes."}
+        return await _wait_update(result, **options, timeout=args.wait_timeout) if args.wait else result
     if args.group == "distribution":
         from .distribution import install_artifact, rollback_install, installation_status, download_release
         if args.action == "status":
@@ -832,6 +916,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 124
             state = _state(result)
             if state in {"failed", "cancelled"}:
+                return 1
+            if args.group == "update" and state in {"blocked", "interrupted"}:
                 return 1
             if state == "unknown":
                 return 2

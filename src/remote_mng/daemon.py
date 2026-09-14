@@ -21,6 +21,14 @@ from .errors import RemoteError
 async def run(home=None):
     home = home_path(home)
     runtime = runtime_dir(home)
+    switch = runtime / "update-switch.json"
+    if switch.exists():
+        try:
+            update_id = json.loads(switch.read_text(encoding="utf-8"))["id"]
+        except (OSError, ValueError, KeyError):
+            raise RemoteError("update_in_progress", "Update recovery must inspect the pending switch before starting a daemon") from None
+        if os.environ.get("RMG_UPDATE_ID") != update_id:
+            raise RemoteError("update_in_progress", "An update owns daemon startup; inspect rmg update status")
     lock = FileLock(str(runtime / "daemon.lock"))
     try:
         lock.acquire(timeout=0)
@@ -35,10 +43,14 @@ async def run(home=None):
     info_path = runtime / "server.json"
     try:
         manager = Manager(home)
+        # The updater verifies the new daemon before accepting business work.
+        if switch.exists() and os.environ.get("RMG_UPDATE_ID"):
+            manager.maintenance = True
 
         def server_status():
             return {"running": True, "pid": os.getpid(), "version": __version__, "protocol_version": 2,
-                    "home": str(home), "started_at": started, "sessions": len(manager.sessions)}
+                    "home": str(home), "started_at": started, "sessions": len(manager.sessions),
+                    "update": manager.update_readiness()}
 
         async def rpc(request):
             supplied = request.headers.get("Authorization", "")
@@ -57,6 +69,16 @@ async def run(home=None):
                 elif method == "server.stop":
                     asyncio.get_running_loop().call_later(0.1, stop.set)
                     result = {"stopping": True, "durable_jobs": "continue_remotely"}
+                elif method == "server.update.prepare":
+                    result = manager.prepare_update()
+                elif method == "server.update.cancel":
+                    manager.maintenance = False
+                    result = {"maintenance": False}
+                elif method == "server.update.stop":
+                    if not manager.maintenance:
+                        raise RemoteError("update_not_prepared", "Reserve the idle manager before stopping it for an update")
+                    result = manager.prepare_update()
+                    asyncio.get_running_loop().call_later(0.1, stop.set)
                 else:
                     result = await manager.dispatch(method, params)
                 return web.json_response({"ok": True, "result": result})

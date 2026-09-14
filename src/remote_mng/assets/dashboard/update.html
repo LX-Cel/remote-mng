@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>remote-mng · 更新进度</title>
+  <link rel="stylesheet" href="/update/style.css">
+  <script src="/update/update.js" defer></script>
+</head>
+<body>
+  <div class="shell update-monitor">
+    <header class="topbar"><div class="brand"><span class="brand-mark">r</span><div><h1>remote-mng</h1><p>独立更新进度</p></div></div><div class="connection"><span id="monitor-dot" class="dot"></span><span id="monitor-connection">正在连接更新进程</span></div></header>
+    <div id="monitor-notice" role="status" class="notice" hidden></div>
+    <main>
+      <section class="intro"><div><span class="eyebrow">UPDATE PROGRESS</span><h2 id="monitor-title">正在读取更新记录…</h2><p>本页由独立更新进程提供，本地管理器重启期间仍可查看进度。</p></div><button id="monitor-refresh" class="quiet">刷新状态</button></section>
+      <section class="panel"><div class="panel-heading"><div><h2>此次更新</h2><p id="monitor-summary">关闭页面不等于取消更新。请查询原更新 ID，避免重复启动。</p></div><span id="monitor-state" class="badge">等待连接</span></div><div class="update-content"><dl id="monitor-facts" class="facts"></dl><ol id="monitor-events" class="timeline"></ol></div></section>
+      <section id="monitor-result-panel" class="panel" hidden><div class="panel-heading"><div><h2 id="monitor-result-title">更新结果</h2></div></div><div class="update-content"><p id="monitor-result" class="monitor-result"></p><p id="monitor-advice" class="advice" hidden></p><p id="monitor-claude" class="small" hidden>请开启新的 Claude Code 会话加载更新后的 Skill。后续任务继续查询原有任务 ID，远端 helper 按兼容要求单独处理。</p><div id="monitor-recovery" hidden><p class="small">本页只读取状态。把恢复请求交给 Agent，或打开控制台使用“恢复此更新”。</p><p><code id="monitor-recovery-command"></code></p><button id="monitor-copy-recovery" class="quiet">复制恢复请求给 Agent</button></div><a id="monitor-console" hidden>打开本地控制台</a></div></section>
+    </main>
+    <footer><span>只读取此次更新状态 · 不执行远端命令</span><span id="monitor-observed">尚未读取</span></footer>
+  </div>
+</body>
+</html>

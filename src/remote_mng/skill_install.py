@@ -141,7 +141,8 @@ def _expected_directories(files):
 def _inspect(root, skills, directory):
     result = {"claude_dir": str(root), "skill_dir": str(directory), "manifest_path": str(directory / MANIFEST_NAME),
               "installed": os.path.lexists(directory), "integrity": "absent", "bound_python": None,
-              "binding_exists": False, "package_version": None, "issues": []}
+              "binding_exists": False, "package_version": None, "issues": [],
+              "user_extension": _extension_status(root)}
     try:
         _safe_chain(directory, directory=True)
         if not result["installed"]:
@@ -175,6 +176,21 @@ def skill_status(claude_dir=None):
     """Read installation integrity without creating directories or starting services."""
     root, skills, directory = _paths(claude_dir)
     return _inspect(root, skills, directory)[0]
+
+
+def _extension_status(root):
+    """Describe user-owned instructions separately; never read or manage their bytes."""
+    path = root / "remote-mng" / "USER.md"
+    result = {"path": str(path), "exists": False, "state": "absent", "managed": False}
+    try:
+        _safe_chain(path)
+        metadata = path.lstat()
+        result.update(exists=True, state="available" if stat.S_ISREG(metadata.st_mode) else "not_a_file")
+    except FileNotFoundError:
+        pass
+    except (OSError, RemoteError):
+        result["state"] = "unreadable_or_unsafe"
+    return result
 
 
 def _require_owned(result):
@@ -219,8 +235,12 @@ def _validate_binding(binding):
     return binding
 
 
-def _desired_files(binding=None):
+def _desired_files(binding=None, *, claude_dir=None):
     payloads = dict(_source_files())
+    root, _, _ = _paths(claude_dir)
+    # A JSON string is documentation data, never a shell expression or command.
+    extension_path = json.dumps((root / "remote-mng" / "USER.md").as_posix(), ensure_ascii=False)
+    payloads["SKILL.md"] = payloads["SKILL.md"].replace(b"{{RMG_USER_EXTENSION_JSON}}", extension_path.encode("utf-8"))
     # Do not resolve(): resolving a Linux virtualenv's python symlink discards
     # the virtualenv and can make the installed remote_mng package unavailable.
     try:
@@ -323,7 +343,7 @@ def _stage_cleanup(directory, skills, payloads):
 
 def install_skill(claude_dir=None, *, binding=None):
     root, skills, directory = _paths(claude_dir)
-    payloads, wanted = _desired_files(binding)
+    payloads, wanted = _desired_files(binding, claude_dir=root)
     stage = skills / f".remote-mng-stage-{uuid.uuid4().hex}"
     backup = skills / f".remote-mng-backup-{uuid.uuid4().hex}"
     try:

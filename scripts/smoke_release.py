@@ -15,12 +15,13 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import zipfile
 
 import asyncssh
 import telnetlib3
 
 from remote_mng.client import Client
-from remote_mng.distribution import _launchers
+from remote_mng.distribution import MANIFEST, _launchers
 from remote_mng.runtime import subprocess_environment, wait_process_exit
 
 
@@ -29,10 +30,24 @@ class SSHServer(asyncssh.SSHServer):
         return False
 
 
-async def smoke(build_result):
+async def smoke(build_result, *, previous_artifact=None, previous_sha256=None):
     build = json.loads(build_result.read_text(encoding="utf-8"))
     archive = Path(build["artifact"])
     source = build_result.parent / "onedir/rmg" / ("rmg.exe" if os.name == "nt" else "rmg")
+    initial_archive, initial_digest, initial_version = archive, build["sha256"], build["version"]
+    if bool(previous_artifact) != bool(previous_sha256):
+        raise ValueError("Previous artifact and its pinned SHA256 must be supplied together")
+    if previous_artifact:
+        initial_archive, initial_digest = Path(previous_artifact).resolve(), previous_sha256
+        # The installer independently validates this manifest, checksum, platform,
+        # compatibility and every executable byte before running the old release.
+        with zipfile.ZipFile(initial_archive) as previous:
+            previous_manifest = json.loads(previous.read(MANIFEST))
+        initial_version = previous_manifest["version"]
+        if initial_version == build["version"]:
+            raise ValueError("A cross-version smoke requires a distinct previous release")
+        if previous_manifest["platform"] != build["platform"]:
+            raise ValueError("Previous release must match this host platform")
     observed = []
     with tempfile.TemporaryDirectory(prefix="rmg release 中文 ' ") as temporary:
         base = Path(temporary)
@@ -125,12 +140,13 @@ async def smoke(build_result):
         hosts = base / "known hosts"
         hosts.write_text(f"[127.0.0.1]:{ssh.get_port()} {key.export_public_key().decode()}", encoding="utf-8")
         try:
-            installed = await invoke([str(source)], "distribution", "install", archive, "--sha256", build["sha256"],
+            installed = await invoke([str(source)], "distribution", "install", initial_archive, "--sha256", initial_digest,
                                      "--install-dir", install, "--claude-dir", claude)
             assert installed["health"]["daemon"] == "passed" and installed["skill"]["binding_kind"] == "stable"
             binary = _launchers(install)
             runtime = await invoke(binary, "runtime-info")
             assert runtime["frozen"] and runtime["resources"]["job-storage-v1.sh"]
+            assert runtime["version"] == initial_version
             wrapper = Path(installed["skill"]["skill_dir"]) / "scripts/rmg.sh"
             if os.name == "nt":
                 git = shutil.which("git")
@@ -196,21 +212,34 @@ async def smoke(build_result):
                 job_id = "bundle-durable"
                 assert started["job_id"] == job_id
             await stop()
-            # Reinstall from the artifact, then change the active program through
-            # the same rollback path used for a retained compatible version.
-            await invoke([str(source)], "distribution", "install", archive, "--sha256", build["sha256"],
-                         "--install-dir", install, "--claude-dir", claude)
-            await invoke([str(source)], "distribution", "rollback", "--to-version", build["version"],
-                         "--install-dir", install, "--claude-dir", claude)
+            # A supplied previous artifact creates history and launches its
+            # helper job with the actual previous binary before upgrading.
+            upgraded = await invoke([str(source)], "distribution", "install", archive, "--sha256", build["sha256"],
+                                    "--install-dir", install, "--claude-dir", claude)
+            assert upgraded["current_version"] == build["version"]
+            assert upgraded["skill"]["package_version"] == build["version"]
+            assert (await invoke(binary, "runtime-info"))["version"] == build["version"]
             recovered = await invoke(binary, "task", "get", task["id"])
             assert recovered["id"] == task["id"]
-            observed.append("compatible reinstall/rollback retains existing task database")
+            if job_id:
+                status = await invoke(binary, "job", "status", "ssh", job_id)
+                assert status["state"] == "succeeded" and counter.read_text() == "X"
+            await stop()
+            await invoke([str(source)], "distribution", "rollback", "--to-version", initial_version,
+                         "--install-dir", install, "--claude-dir", claude)
+            assert (await invoke(binary, "runtime-info"))["version"] == initial_version
+            recovered = await invoke(binary, "task", "get", task["id"])
+            assert recovered["id"] == task["id"]
+            observed.append("actual previous-release upgrade and compatible rollback retain existing task database"
+                            if previous_artifact else "compatible same-version reinstall/rollback retains existing task database")
             if job_id:
                 status = await invoke(binary, "job", "status", "ssh", job_id)
                 assert status["state"] == "succeeded" and counter.read_text() == "X"
                 assert "durable-finished" in (await invoke(binary, "job", "logs", "ssh", job_id))["data"]
                 observed.append("Linux helper job survives CLI exit and manager reinstall; side effect count exactly one")
             return {"platform": build["platform"], "version": build["version"], "artifact_sha256": build["sha256"],
+                    "previous_version": initial_version if previous_artifact else None,
+                    "cross_version_upgrade": bool(previous_artifact),
                     "state": "passed", "checks": observed, "real_targets": False, "global_install_changed": False}
         finally:
             await stop()
@@ -227,8 +256,12 @@ async def smoke(build_result):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-result", required=True, type=Path)
+    parser.add_argument("--previous-artifact", type=Path,
+                        help="A genuine retained previous release ZIP for upgrade/rollback acceptance")
+    parser.add_argument("--previous-sha256", help="Pinned SHA256 of --previous-artifact")
     arguments = parser.parse_args()
-    result = asyncio.run(smoke(arguments.build_result.resolve()))
+    result = asyncio.run(smoke(arguments.build_result.resolve(), previous_artifact=arguments.previous_artifact,
+                              previous_sha256=arguments.previous_sha256))
     output = arguments.build_result.with_name("smoke-result.json")
     output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
