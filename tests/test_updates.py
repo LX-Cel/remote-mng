@@ -9,11 +9,12 @@ import pytest
 
 from remote_mng import updates as upd
 from remote_mng.errors import RemoteError
+from remote_mng.runtime import platform_tag
 
 
 def release(version="0.4.0"):
     return {"repository": "owner/project", "version": version, "tag": "v" + version,
-            "asset": f"remote-mng-{version}-{upd.platform_tag()}.zip", "sha256": "a" * 64,
+            "asset": f"remote-mng-{version}-{platform_tag()}.zip", "sha256": "a" * 64,
             "notes": "Release notes", "url": "https://github.com/owner/project/releases/tag/v" + version}
 
 
@@ -24,6 +25,7 @@ def api_release(version="0.4.0"):
 
 
 def test_discovery_pins_exact_platform_and_digest(monkeypatch):
+    monkeypatch.setenv("RMG_RELEASE_TRANSPORT", "gh")
     calls = []
     monkeypatch.setattr(upd, "_gh", lambda args: calls.append(args) or json.dumps(api_release()).encode())
     result = upd._release("owner/project")
@@ -36,6 +38,7 @@ def test_discovery_pins_exact_platform_and_digest(monkeypatch):
     ({"tag_name": "v0.4.0;cmd"}, "invalid_release_metadata"),
     ({"prerelease": True}, "invalid_release_metadata"), ({"assets": []}, "release_platform_unavailable")])
 def test_invalid_release_rejected(monkeypatch, change, code):
+    monkeypatch.setenv("RMG_RELEASE_TRANSPORT", "gh")
     monkeypatch.setattr(upd, "_gh", lambda args: json.dumps({**api_release(), **change}).encode())
     with pytest.raises(RemoteError) as error:
         upd._release("owner/project")
@@ -43,6 +46,7 @@ def test_invalid_release_rejected(monkeypatch, change, code):
 
 
 def test_checksum_asset_is_exact_and_bound_to_zip(monkeypatch):
+    monkeypatch.setenv("RMG_RELEASE_TRANSPORT", "gh")
     data = api_release()
     name = data["assets"][0]["name"]
     data["assets"][0].pop("digest")

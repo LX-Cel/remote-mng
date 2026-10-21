@@ -6,7 +6,7 @@
 
 工具随包提供 Claude Code Skill，主入口是 `rmg` CLI。Skill 告诉 Agent 如何检查条件、记录步骤、保存任务 ID，以及如何处理断线和结果不明。MCP 保留为可选适配层，默认使用不需要配置 MCP。remote-mng 本身不内置模型，也不替代项目的构建脚本和业务验证规则。
 
-当前发布为 **[v0.4.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，供个人试用**。Linux 的完整更新和回退验收已通过；Windows 包的安装与分发验收通过，但受限宿主中的完整自动更新尚未通过，仅验证了提前阻碍并保留原状态。具体来源及摘要见 [0.4 验收记录](docs/v04-validation.md)。仓库保持私有，下载需要访问权限；此版本不标记为 Latest，默认查新不会将预发布当作正式更新，请按下方固定版本安装。
+仓库已公开。当前可下载的是 **[v0.4.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)**；本分支正在实现 **0.5.0 简易安装与更新**，尚未发布。下方的新入口随 0.5.0 制品发行后可用；当前 0.4.0 安装方法保留在 [高级安装指南](docs/distribution.md#已发布的-040-和离线安装)。0.4 的 Linux 完整更新/回退通过，受限 Windows 宿主仅通过安全阻碍验收，具体见 [历史验收记录](docs/v04-validation.md)。
 
 ## 它解决什么问题
 
@@ -24,71 +24,29 @@
 
 ## 一次安装，之后用自然语言
 
-### 推荐：独立发行包
+**0.5.0 发行后，只需按本机系统选择下面一种方式。** 在普通系统终端中下载脚本，查看内容后运行；脚本选择适合的平台包、验证摘要、安装程序和 Skill，并启动本地管理器。无需安装 Python、uv 或 GitHub CLI，也无需自己选择 ZIP 和填写摘要。当前预览期会自动提示并选择支持新入口的预览版。
 
-独立包包含 Python、依赖、网页、Skill 和 helper 脚本，不要求开发者安装 Python。支持的发行平台为 **Windows x86_64、Linux x86_64**；WSL 使用 Linux 包，并与 Windows 分别安装。Windows 原生 Claude Code 需要可用的 Git Bash。Linux 包需要满足发布清单中的 glibc 要求，正式 CI 使用 Ubuntu 22.04 构建；macOS、ARM 和其他环境尚未作为发行平台承诺。
+### Windows PowerShell
 
-在普通系统终端完成首次安装。先准备 [GitHub CLI](https://cli.github.com/)，使用有仓库权限的账号认证：
-
-```sh
-gh auth login
-gh auth status
-```
-
-也可以登录 GitHub 网页后从 Release 手动下载。以下以 **v0.4.0** 为例，先确认该 Release 已发布并包含对应资产，若为预发布则核对其限制。私有仓库不能使用匿名下载链接；GitHub 权限与目标设备的 SSH 认证是两套独立配置。
-
-**Windows PowerShell**：下载固定版本的 ZIP、安装脚本及各自摘要。
+先下载 [install.ps1](install.ps1)，再运行下载到本地的脚本：
 
 ```powershell
-gh release download v0.4.0 --repo LX-Cel/remote-mng --dir ./rmg-install `
-  --pattern 'remote-mng-0.4.0-windows-x86_64.zip*' `
-  --pattern 'install-release.ps1*'
-Set-Location ./rmg-install
+Invoke-WebRequest https://raw.githubusercontent.com/LX-Cel/remote-mng/main/install.ps1 -OutFile install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-阅读下载的 `install-release.ps1` 后，校验脚本并安装：
+### Linux / WSL
 
-```powershell
-$installerSha = ((Get-Content -Raw ./install-release.ps1.sha256).Trim() -split '\s+')[0]
-if ((Get-FileHash ./install-release.ps1 -Algorithm SHA256).Hash -ne $installerSha) {
-  throw '安装脚本摘要不匹配'
-}
-$archiveSha = ((Get-Content -Raw ./remote-mng-0.4.0-windows-x86_64.zip.sha256).Trim() -split '\s+')[0]
-./install-release.ps1 -Archive ./remote-mng-0.4.0-windows-x86_64.zip -Sha256 $archiveSha
-```
-
-**Linux / WSL**：需要已有 `unzip` 和 `sha256sum`。
+先下载 [install.sh](install.sh)，再运行下载到本地的脚本：
 
 ```sh
-gh release download v0.4.0 --repo LX-Cel/remote-mng --dir ./rmg-install \
-  --pattern 'remote-mng-0.4.0-linux-x86_64.zip*' \
-  --pattern 'install-release.sh*'
-cd ./rmg-install
+curl -fL https://raw.githubusercontent.com/LX-Cel/remote-mng/main/install.sh -o install.sh
+sh ./install.sh
 ```
 
-阅读下载的 `install-release.sh` 后，校验脚本并安装：
+**手动更新也是重新运行同一个脚本。** 程序负责检查活动、保留任务、切换版本和同步 Skill；有阻碍时说明原因，不能把“开始更新”当作“更新完成”。日常也可以直接让 Claude 更新，见 [更新说明](docs/updates.md)。
 
-```sh
-sha256sum --check install-release.sh.sha256 && \
-  sh ./install-release.sh ./remote-mng-0.4.0-linux-x86_64.zip \
-  "$(cut -d ' ' -f 1 ./remote-mng-0.4.0-linux-x86_64.zip.sha256)"
-```
-
-安装脚本先验证 ZIP 摘要，安装器再核对逐文件清单和运行条件。成功后安装工具、绑定个人 Skill 并启动本地管理器。默认安装目录为 Windows `%LOCALAPPDATA%/remote-mng` 或 Linux `~/.local/share/remote-mng`；不会修改全局 PATH。Agent 使用 Skill 中已绑定的稳定入口，因此不依赖你手工添加 PATH。完整参数和离线安装见 [独立包安装指南](docs/distribution.md)。
-
-### 备选：uv 安装
-
-适合愿意维护 Python 工具环境、或需要从源码安装的开发者。准备 Python 3.11+、Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，在已认证且有访问权限的终端中执行：
-
-```sh
-gh repo clone LX-Cel/remote-mng
-cd remote-mng
-git checkout v0.4.0
-uv tool install .
-rmg setup --start-daemon
-```
-
-这里使用固定发布 tag，避免无意安装仍在变化的开发分支。若 uv 提示工具目录不在 PATH，按提示执行 `uv tool update-shell`、重开终端，再执行 `rmg setup --start-daemon`。`setup` 安装 Skill、启动本地管理器并检查本地状态，不连接远端。普通 uv tool 安装可使用后续统一更新；可编辑开发环境和未知 pip 安装不会被自动覆盖。当前不通过 PyPI 包名安装。更多说明见 [Skill 安装与维护](docs/claude-skill.md)。
+支持 Windows x86_64、Linux x86_64；WSL 在自身环境中安装。Windows 原生 Claude Code 需要 Git Bash；Linux/WSL 需要系统 `curl`、`awk`、`unzip` 和 `sha256sum`，缺少时会给出安装建议。默认安装到个人目录，不需要管理员权限，不改全局 PATH。自定义目录、离线包及源码维护见 [高级安装指南](docs/distribution.md)。
 
 ### 开始第一次任务
 
@@ -142,11 +100,11 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 
 > 检查 remote-mng 是否有新版，说明更新影响。如果没有阻碍，更新到最新版，保留已有任务，完成后核对程序、管理器和 Skill 版本。
 
-0.4 的统一更新入口先固定发布版本和摘要，再由独立更新进程执行，并保留更新 ID 和进度页。Agent 可以查询组件状态、阻碍、历史和恢复结果。检查阶段不会安装；活动交互会话、正在执行的操作、被修改的托管 Skill 或不支持的安装来源会阻止切换。
+0.5 的统一入口会记住所选更新通道：预览安装后，Agent 后续查新仍包含预览版本；正式通道只选择正式发布。公开仓库通过 HTTPS 获取发布信息，无需登录 GitHub。版本、摘要、更新记录、进度及恢复证据由工具管理，开发者不需要记住这些参数。
 
-独立安装保留兼容版本供回退；受支持的 uv 安装在替换前缓存原程序和依赖，供离线恢复。更新不重新提交远端作业，也不批量更新设备 helper。`failed` 后恢复到旧版不等于升级成功，`blocked` 表示尚有条件未满足。流程、退出码和恢复入口见 [更新指南](docs/updates.md)。
+手动更新时，重新运行上面的安装脚本即可。活动前台、正在执行的操作、Skill 本地修改或兼容性不明会阻止切换；脚本不为了更新强行关闭它们。0.3 等旧版缺少安全更新协议，正在运行的旧管理器会明确阻碍迁移，先让 Agent 核对活动和作业 ID，在你允许普通前台断开后处理。详情见 [旧版迁移与恢复](docs/updates.md)。
 
-**从 0.3.0 等没有 `update` 命令的版本升级，需要先做一次引导安装。** 让 Agent 检查活动任务并保留 job ID，在普通前台可断开后停止旧管理器，再按对应的独立包安装步骤或 [uv 旧版本升级步骤](docs/claude-skill.md#升级旧版本) 安装 0.4。旧 CLI 不会因为服务端出现新版就自动获得更新命令。完成后新开 Claude 会话，之后再使用统一更新。
+独立安装保留兼容版本供回退；受支持的 uv 安装在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。0.5 的迁移与简易入口仍需按该版本的实际发行验收确认，不能用 0.4 的历史结果代替。
 
 个人部署规范可以保存在 `~/.claude/remote-mng/USER.md`，自定义 Claude 配置目录时跟随该目录。安装、升级和卸载都不修改这个文件；不要直接修改托管的 `skills/remote-mng` 目录。已存在的用户修改会被保护并报告冲突，不能靠强制覆盖跳过。
 
@@ -192,8 +150,8 @@ uv run --frozen python scripts/build_release.py
 uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json
 ```
 
-[发布流水线](.github/workflows/release.yml) 在 Windows 和 Ubuntu 22.04 上执行测试、构建及实际制品验证，核对上一正式版的升级/回退，并运行真实 uv 环境到独立更新器的交接与离线回退。源码前驱夹具使用当前实现加测试版本号，不冒充历史正式版。默认 CI 要求完整更新成功；受限宿主的 `passed_blocked_safely` 专项诊断不能替代正式发布门槛。本次 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/34837889845) 全部通过，[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053) 的 Linux 通过、Windows 未通过，因此以明确标注限制的预发布形式提供试用，未放宽正式自动发布条件。
+[发布流水线](.github/workflows/release.yml) 在 Windows 和 Ubuntu 22.04 上执行测试、构建及实际制品验证，核对上一正式版的升级/回退，并运行真实 uv 环境到独立更新器的交接与离线回退。源码前驱夹具使用当前实现加测试版本号，不冒充历史正式版。默认 CI 要求完整更新成功；受限宿主的 `passed_blocked_safely` 专项诊断不能替代正式发布门槛。0.4.0 的 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/34837889845) 全部通过，[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053) 的 Linux 通过、Windows 未通过，因此该版本以明确标注限制的预发布形式提供试用；这不是 0.5.0 已发布或验收通过的声明。
 
 ## 许可证
 
-采用 [MIT License](LICENSE)。私有仓库访问仍需单独授权；第三方依赖保留各自许可证，见 [依赖说明](docs/dependencies.md)。
+采用 [MIT License](LICENSE)。第三方依赖保留各自许可证，见 [依赖说明](docs/dependencies.md)。

@@ -306,11 +306,8 @@ async def prepare_source(release, work, installation, claude_dir=None):
             or release.get("tag") != "v" + version):
         _fail("source_wheel_unavailable", "This release needs a uniquely named wheel with a verified SHA256 for uv updates")
     archive = work / wheel["asset"]
-    gh = shutil.which("gh")
-    if not gh:
-        _fail("gh_unavailable", "An authenticated GitHub CLI is required to obtain the pinned source wheel")
-    await asyncio.to_thread(_run, [gh, "release", "download", release["tag"], "--repo", release["repository"],
-                                  "--pattern", wheel["asset"], "--dir", str(work)], environment={"GH_HOST": "github.com"})
+    from .releases import download_asset
+    await asyncio.to_thread(download_asset, release["repository"], release["tag"], wheel["asset"], wheel["sha256"], archive)
     if _hash(archive) != wheel["sha256"].lower():
         _fail("release_checksum_mismatch", "The downloaded source wheel does not match the pinned digest")
     _verify_wheel(archive, version)

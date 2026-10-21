@@ -88,9 +88,20 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--claude-dir")
     setup.add_argument("--start-daemon", action="store_true", help="Start the local manager during installation outside an Agent sandbox")
     setup.add_argument("--bind-command-json", help=argparse.SUPPRESS)
+    bootstrap = groups.add_parser("bootstrap", help=argparse.SUPPRESS)
+    _common(bootstrap)
+    bootstrap.add_argument("archive")
+    bootstrap.add_argument("--sha256", required=True)
+    bootstrap.add_argument("--install-dir")
+    bootstrap.add_argument("--claude-dir")
+    bootstrap.add_argument("--repository", required=True)
+    bootstrap.add_argument("--tag", required=True)
+    bootstrap.add_argument("--preview", action="store_true")
+    bootstrap.add_argument("--no-start", action="store_true")
+    groups._choices_actions = [item for item in groups._choices_actions if item.dest != "bootstrap"]
     update = _sub(groups, "update", "Check, update or recover this installation without opening remote connections")
     update.set_defaults(action="start", install_dir=None, claude_dir=None, repository=None, tag=None,
-                        plan_id=None, wait=False, wait_timeout=0.0)
+                        plan_id=None, wait=False, wait_timeout=0.0, channel=None)
 
     def update_options(item, *, release=False, wait=False):
         item.add_argument("--install-dir", default=argparse.SUPPRESS)
@@ -98,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
         if release:
             item.add_argument("--repository", default=argparse.SUPPRESS, help="GitHub OWNER/REPO; defaults to the recorded release source")
             item.add_argument("--tag", default=argparse.SUPPRESS, help="Exact release tag; omitted checks the newest stable release")
+            channels = item.add_mutually_exclusive_group()
+            channels.add_argument("--channel", choices=("stable", "preview"), default=argparse.SUPPRESS,
+                                  help="Remembered release channel; defaults to this installation's channel")
+            channels.add_argument("--preview", dest="channel", action="store_const", const="preview", default=argparse.SUPPRESS,
+                                  help="Include preview releases for this update")
         if wait:
             item.add_argument("--wait", action="store_true", default=argparse.SUPPRESS,
                               help="Poll the persistent local update record; Ctrl-C only stops waiting")
@@ -497,6 +513,11 @@ async def dispatch(args: argparse.Namespace) -> Any:
         from .distribution import setup
         binding = json.loads(args.bind_command_json) if args.bind_command_json else None
         return await setup(args.home, args.claude_dir, binding=binding, start_daemon=args.start_daemon)
+    if args.group == "bootstrap":
+        from .installer import install
+        return await install(args.archive, args.sha256, home=args.home, install_dir=args.install_dir,
+                             claude_dir=args.claude_dir, repository=args.repository, tag=args.tag,
+                             preview=args.preview, no_start=args.no_start)
     if args.group == "update":
         from .updates import check_update, update_status, start_update, run_worker
         if args.action == "_run":
@@ -505,21 +526,23 @@ async def dispatch(args: argparse.Namespace) -> Any:
         if args.task or args.step_id or args.label:
             raise RemoteError("invalid_arguments", "Software updates use update IDs, not remote task or step IDs")
         if args.action == "check":
-            return await check_update(**options, repository=args.repository, tag=args.tag)
+            channel_options = {"channel": args.channel} if args.channel is not None else {}
+            return await check_update(**options, repository=args.repository, tag=args.tag, **channel_options)
         if args.action == "status":
             return await update_status(**options, update_id=args.update_id)
         if not math.isfinite(args.wait_timeout) or args.wait_timeout < 0:
             raise RemoteError("invalid_arguments", "--wait-timeout must be a finite non-negative number")
-        if args.action == "recover" and (args.plan_id or args.repository or args.tag):
+        if args.action == "recover" and (args.plan_id or args.repository or args.tag or args.channel):
             raise RemoteError("invalid_arguments", "Recovery uses the existing update ID and cached artifacts; do not supply a release, repository or plan")
-        if args.plan_id and (args.repository or args.tag or args.action == "rollback"):
+        if args.plan_id and (args.repository or args.tag or args.channel or args.action == "rollback"):
             raise RemoteError("invalid_arguments", "--plan-id already fixes the release; do not combine it with a repository, tag or rollback")
         if args.action == "recover":
             from .updates import recover_update
             result = await recover_update(**options, update_id=args.update_id)
         else:
+            channel_options = {"channel": args.channel} if args.channel is not None else {}
             result = await start_update(**options, plan_id=args.plan_id, repository=args.repository, tag=args.tag,
-                                        rollback=args.action == "rollback", version=getattr(args, "to_version", None))
+                                        rollback=args.action == "rollback", version=getattr(args, "to_version", None), **channel_options)
         installation = result.get("installation") or result.get("plan", {}).get("installation") or result.get("source_prepared", {}).get("installation") or {}
         if (args.wait and _state(result) not in UPDATE_TERMINAL_STATES and installation.get("kind") == "uv_tool"
                 and installation.get("prefix") and Path(installation["prefix"]).absolute() == Path(sys.prefix).absolute()):
@@ -917,7 +940,7 @@ def main(argv: list[str] | None = None) -> int:
             state = _state(result)
             if state in {"failed", "cancelled"}:
                 return 1
-            if args.group == "update" and state in {"blocked", "interrupted"}:
+            if args.group in {"update", "bootstrap"} and state in {"blocked", "interrupted"}:
                 return 1
             if state == "unknown":
                 return 2

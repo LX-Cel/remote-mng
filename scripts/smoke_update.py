@@ -121,6 +121,7 @@ async def smoke(build_result, previous_build_result, *, keep=False, expect_proce
     repository = "smoke-fixture/remote-mng"
     shim = local_gh(base, build, repository)
     env = subprocess_environment(independent=True)
+    env["RMG_RELEASE_TRANSPORT"] = "gh"
     env["PATH"] = str(shim) + os.pathsep + (str(Path(os.environ["SystemRoot"]) / "System32") if os.name == "nt" else "/usr/bin:/bin")
     env["CLAUDE_CONFIG_DIR"] = str(claude)
     env.pop("RMG_UPDATE_ID", None)

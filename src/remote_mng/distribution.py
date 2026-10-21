@@ -27,7 +27,7 @@ from filelock import FileLock, Timeout
 
 from .client import Client, runtime_dir
 from .errors import RemoteError
-from .runtime import CONTRACTS, external_environment, platform_tag, runtime_manifest, subprocess_environment
+from .runtime import CONTRACTS, platform_tag, runtime_manifest, subprocess_environment
 from . import skill_install
 
 MANIFEST = "rmg-release.json"
@@ -837,35 +837,8 @@ async def rollback_install(*, install_dir=None, home=None, claude_dir=None, vers
 
 
 def download_release(repository, tag, asset, sha256, destination):
-    """Download one explicitly named private/public GitHub release through gh."""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or ""):
-        _fail("invalid_release_source", "Use an explicit GitHub owner/repository")
-    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", tag):
-        _fail("invalid_release_source", "Pin a complete v-prefixed release tag; latest is not accepted")
+    """Download one pinned release without requiring a GitHub CLI installation."""
+    from .releases import download_asset
     if not isinstance(asset, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.zip", asset):
         _fail("invalid_release_source", "Select one exact ZIP asset name; patterns are not accepted")
-    if not isinstance(sha256, str) or not _HASH.fullmatch(sha256):
-        _fail("invalid_checksum", "Supply the release artifact SHA256 from the selected authenticated release")
-    target = Path(destination).expanduser().absolute()
-    _safe_path(target)
-    if target.exists():
-        _fail("download_conflict", "Destination already exists; it will not be overwritten", path=str(target))
-    gh = shutil.which("gh")
-    if not gh:
-        _fail("gh_unavailable", "Install GitHub CLI and authenticate to access the private repository, or provide a local verified artifact")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".rmg-download-", dir=target.parent) as temporary:
-        result = subprocess.run([gh, "release", "download", tag, "--repo", repository, "--pattern", asset,
-            "--dir", temporary], stdin=subprocess.DEVNULL, capture_output=True, timeout=300,
-            env=external_environment(), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        if result.returncode:
-            _fail("release_download_failed", "GitHub CLI could not download the pinned asset; check authentication and repository access",
-                  repository=repository, tag=tag, asset=asset, exit_code=result.returncode)
-        downloaded = Path(temporary) / asset
-        if not downloaded.is_file() or _digest(downloaded) != sha256.lower():
-            _fail("artifact_checksum_mismatch", "Downloaded artifact did not match its pinned SHA256")
-        # Exclusive creation protects against another download publishing here.
-        with downloaded.open("rb") as source, target.open("xb") as output:
-            shutil.copyfileobj(source, output)
-    return {"path": str(target), "repository": repository, "tag": tag, "asset": asset,
-            "sha256": sha256.lower(), "installed": False, "authenticated_transport": "gh"}
+    return download_asset(repository, tag, asset, sha256, destination)

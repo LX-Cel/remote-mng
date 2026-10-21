@@ -340,16 +340,19 @@ async def real_shell(request, tmp_path, monkeypatch):
     binary = shutil.which(request.param)
     if not binary:
         pytest.skip(f"{request.param} unavailable")
-    arguments = [binary, "ash"] if request.param == "busybox" else [binary]
+    arguments = ([binary, "ash"] if request.param == "busybox" else
+                 [binary, "--noprofile", "--norc"] if request.param == "bash" else [binary])
     terminal = PosixTerminal(arguments)
     manager = Manager(tmp_path / "state")
     manager.config.put("board", {"host": "example.invalid"})
     monkeypatch.setattr("remote_mng.transports.open_terminal", AsyncMock(return_value=terminal))
     opened = await manager.session_open("board")
     shell = manager, terminal, opened["id"], opened["control_token"]
-    await enable(shell)
-    yield shell
-    await manager.close()
+    try:
+        await enable(shell)
+        yield shell
+    finally:
+        await manager.close()
 
 
 async def test_real_shell_preserves_directory_environment_and_actual_exit(real_shell, tmp_path):

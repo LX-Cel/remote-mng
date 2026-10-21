@@ -129,6 +129,7 @@
     facts.replaceChildren();
     const data = el("dl", null, "facts");
     addFact(data, "安装方式", types[kind] || kind || "待确认");
+    addFact(data, "更新通道", value.channel === "preview" ? "预览版（已记住）" : "正式版");
     const source = installation.repository || installation.source?.repository || installation.origin?.repository;
     addFact(data, "更新来源", typeof source === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(source) ? source : "尚未记录 GitHub 发布来源");
     for (const [name, label] of [["cli", "CLI"], ["daemon", "运行中的管理器"], ["skill", "Claude Skill"]]) {

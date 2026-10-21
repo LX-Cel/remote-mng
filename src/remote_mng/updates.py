@@ -27,7 +27,7 @@ from filelock import FileLock, Timeout
 from . import __version__, distribution as dist, skill_install
 from .client import Client, runtime_dir
 from .errors import RemoteError
-from .runtime import CONTRACTS, command_prefix, external_environment, platform_tag, process_context, subprocess_environment, wait_process_exit
+from .runtime import CONTRACTS, command_prefix, external_environment, process_context, subprocess_environment, wait_process_exit
 
 DEFAULT_REPOSITORY = "LX-Cel/remote-mng"
 TERMINAL = {"succeeded", "failed", "rolled_back", "blocked", "interrupted", "cancelled"}
@@ -217,7 +217,7 @@ async def update_status(home=None, install_dir=None, claude_dir=None, update_id=
         "helper": {"state": "not_checked", "protocol": CONTRACTS["helper_protocol"],
                    "advice": "Remote helpers are unchanged. Run target inspect on a selected target before new durable jobs; query existing IDs first."}},
         "blockers": _blockers(installation, daemon, skill), "history": history, "latest_plan": plan, "pending_recovery": pending,
-        "automatic_updates": False, "remote_checked": False, "network_checked": False}
+        "channel": update_channel(home), "automatic_updates": False, "remote_checked": False, "network_checked": False}
 
 
 def _gh(arguments, timeout=60):
@@ -237,69 +237,40 @@ def _gh(arguments, timeout=60):
     return result.stdout
 
 
-def _release(repository, tag=None):
-    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-        raise RemoteError("invalid_release_source", "Use a GitHub owner/repository")
-    if tag is not None and (not isinstance(tag, str) or not _TAG.fullmatch(tag)):
-        raise RemoteError("invalid_release_source", "Select a stable vX.Y.Z release tag")
-    endpoint = f"repos/{repository}/releases/" + (f"tags/{tag}" if tag else "latest")
-    try:
-        data = json.loads(_gh(["api", "--hostname", "github.com", endpoint]))
-        actual_tag = data["tag_name"]
-        if not _TAG.fullmatch(actual_tag) or data.get("draft") or data.get("prerelease") or (tag and actual_tag != tag):
-            raise ValueError("not the requested stable release")
-        version = actual_tag[1:]
-        name = f"remote-mng-{version}-{platform_tag()}.zip"
-        assets = [item for item in data["assets"] if item.get("name") == name]
-        if len(assets) != 1:
-            raise RemoteError("release_platform_unavailable", "This release has no unique standalone package for the current platform", {"platform": platform_tag(), "tag": actual_tag})
-        digest = assets[0].get("digest") or ""
-        if digest.startswith("sha256:") and dist._HASH.fullmatch(digest[7:]):
-            sha256 = digest[7:].lower()
-        else:
-            checksum = name + ".sha256"
-            if len([item for item in data["assets"] if item.get("name") == checksum]) != 1:
-                raise RemoteError("release_checksum_unavailable", "The release must provide a SHA256 digest or exact checksum asset")
-            with tempfile.TemporaryDirectory(prefix="rmg-release-check-") as temporary:
-                _gh(["release", "download", actual_tag, "--repo", repository, "--pattern", checksum, "--dir", temporary])
-                path = Path(temporary) / checksum
-                if path.stat().st_size > 2048:
-                    raise ValueError("invalid checksum size")
-                parts = path.read_text(encoding="ascii").strip().split()
-                if len(parts) != 2 or parts[1].lstrip("*") != name or not dist._HASH.fullmatch(parts[0]):
-                    raise ValueError("invalid checksum")
-                sha256 = parts[0].lower()
-        wheel_name = f"remote_mng-{version}-py3-none-any.whl"
-        wheel_assets = [item for item in data["assets"] if item.get("name") == wheel_name]
-        wheel = None
-        if len(wheel_assets) == 1:
-            wheel_digest = wheel_assets[0].get("digest") or ""
-            if wheel_digest.startswith("sha256:") and dist._HASH.fullmatch(wheel_digest[7:]):
-                wheel = {"asset": wheel_name, "sha256": wheel_digest[7:].lower()}
-            elif len([item for item in data["assets"] if item.get("name") == wheel_name + ".sha256"]) == 1:
-                with tempfile.TemporaryDirectory(prefix="rmg-wheel-check-") as temporary:
-                    _gh(["release", "download", actual_tag, "--repo", repository, "--pattern", wheel_name + ".sha256", "--dir", temporary])
-                    checksum_path = Path(temporary) / (wheel_name + ".sha256")
-                    if checksum_path.stat().st_size > 2048:
-                        raise ValueError("invalid wheel checksum size")
-                    parts = checksum_path.read_text(encoding="ascii").strip().split()
-                    if len(parts) != 2 or parts[1].lstrip("*") != wheel_name or not dist._HASH.fullmatch(parts[0]):
-                        raise ValueError("invalid wheel checksum")
-                    wheel = {"asset": wheel_name, "sha256": parts[0].lower()}
-        return {"repository": repository, "tag": actual_tag, "version": version, "asset": name, "sha256": sha256, "wheel": wheel,
-                "platform": platform_tag(), "bytes": assets[0].get("size"), "notes": str(data.get("body") or "")[:32000],
-                "url": f"https://github.com/{repository}/releases/tag/{actual_tag}", "release_id": data.get("id")}
-    except RemoteError:
-        raise
-    except (ValueError, OSError, KeyError, TypeError, AttributeError):
-        raise RemoteError("invalid_release_metadata", "GitHub returned incomplete or invalid stable release metadata") from None
+def _release(repository, tag=None, channel="stable"):
+    from .releases import get_release
+    return get_release(repository, tag, channel=channel, gh_runner=_gh)
 
 
-async def check_update(home=None, install_dir=None, claude_dir=None, repository=None, tag=None):
+def update_channel(home):
+    path = _directory(home) / "preferences.json"
+    if not path.exists():
+        return "stable"
+    saved = _read(path)
+    if saved.get("format") != 1 or saved.get("channel") not in {"stable", "preview"}:
+        raise RemoteError("invalid_update_preferences", "The saved update channel needs inspection")
+    return saved["channel"]
+
+
+def save_channel(home, channel):
+    if channel not in {"stable", "preview"}:
+        raise RemoteError("invalid_update_channel", "Select stable or preview")
+    dist._json(_directory(home, create=True) / "preferences.json", {"format": 1, "channel": channel})
+
+
+async def check_update(home=None, install_dir=None, claude_dir=None, repository=None, tag=None, channel=None):
     home, root, claude = _context(home, install_dir, claude_dir)
     current = await update_status(home, root, claude)
     installation = current["installation"]
-    release = await asyncio.to_thread(_release, repository or installation["repository"], tag)
+    selected_channel = channel or update_channel(home)
+    if selected_channel not in {"stable", "preview"}:
+        raise RemoteError("invalid_update_channel", "Select stable or preview")
+    if selected_channel == "stable":
+        release = await asyncio.to_thread(_release, repository or installation["repository"], tag)
+    else:
+        release = await asyncio.to_thread(_release, repository or installation["repository"], tag, selected_channel)
+    if tag and release.get("prerelease"):
+        selected_channel = "preview"
     current_version = installation["current_version"]
     selected = tuple(map(int, release["version"].split(".")))
     try:
@@ -319,7 +290,7 @@ async def check_update(home=None, install_dir=None, claude_dir=None, repository=
     plan = {"id": plan_id, "plan_id": plan_id, "state": state, "action": "update", "created_at": time.time(),
             "expires_at": time.time() + PLAN_LIFETIME, "current_version": current_version,
             "target_version": release["version"], "release": release, "installation": installation,
-            "ahead_of_release": ahead,
+            "ahead_of_release": ahead, "channel": selected_channel,
             "home": str(home), "install_dir": str(root), "claude_dir": str(claude), "blockers": blockers,
             "compatibility": {"required_contracts": CONTRACTS, "checked": "candidate_preparation_required",
                               "data_migration": False, "remote_helpers_changed": False},
@@ -386,7 +357,7 @@ async def _preflight_process(home, record, command, version, *, external=False):
 
 
 async def start_update(home=None, install_dir=None, claude_dir=None, plan_id=None, repository=None, tag=None,
-                       rollback=False, version=None):
+                       rollback=False, version=None, channel=None):
     home, root, claude = _context(home, install_dir, claude_dir)
     directory = _directory(home, create=True)
     if (home / "runtime/update-switch.json").exists():
@@ -416,8 +387,11 @@ async def start_update(home=None, install_dir=None, claude_dir=None, plan_id=Non
         if plan["expires_at"] < time.time():
             raise RemoteError("update_plan_expired", "Run a new update check before installing")
     else:
-        plan = await check_update(home, root, claude, repository, tag)
+        options = {"channel": channel} if channel is not None else {}
+        plan = await check_update(home, root, claude, repository, tag, **options)
     if plan["state"] == "up_to_date":
+        if plan.get("channel"):
+            save_channel(home, plan["channel"])
         return {**plan, "state": "succeeded", "action": "unchanged", "changed": False}
     # A plan is an idempotency key, including after a successful version switch.
     # Recheck creates a new plan when an intentional retry is needed.
@@ -807,7 +781,7 @@ async def _monitor(home, record):
     return runner
 
 
-async def run_worker(home, update_id):
+async def run_worker(home, update_id, *, monitor_lifetime=None):
     home = Path(home).expanduser().absolute()
     directory = _directory(home, create=True)
     record = _read(directory / f"update-{_id(update_id)}.json")
@@ -829,7 +803,7 @@ async def run_worker(home, update_id):
         try:
             monitor = await _monitor(home, record)
             if record["plan"]["installation"]["kind"] == "uv_tool":
-                if not getattr(sys, "frozen", False):
+                if not getattr(sys, "frozen", False) and not record.get("external_installer"):
                     await _prepare_source_worker(home, record)
                     _progress(home, record, "handoff", handoff_from_pid=os.getpid())
                     process = _spawn([*record["updater_command"], "--home", str(home), "update", "_run", "--id", record["id"]], home, record["id"])
@@ -860,11 +834,14 @@ async def run_worker(home, update_id):
             raise
         except Exception:
             _progress(home, record, "failed", error={"code": "update_failed", "message": "The update could not complete; inspect its state and recovery result"})
+        if record.get("state") == "succeeded" and record["plan"].get("channel"):
+            save_channel(home, record["plan"]["channel"])
         lock.release()
         if monitor and not handed_off:
             # An old uv interpreter must not keep its environment locked after
             # preparation failed; the durable journal remains queryable.
-            lifetime = 5 if record["plan"]["installation"]["kind"] == "uv_tool" and not getattr(sys, "frozen", False) else MONITOR_LIFETIME
+            lifetime = (monitor_lifetime if monitor_lifetime is not None else
+                        5 if record["plan"]["installation"]["kind"] == "uv_tool" and not getattr(sys, "frozen", False) else MONITOR_LIFETIME)
             await asyncio.sleep(lifetime)
     finally:
         lock.release()

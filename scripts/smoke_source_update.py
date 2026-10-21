@@ -141,6 +141,7 @@ async def smoke(build_result, dependency_wheels=None, *, expect_process_block=Fa
     home, claude, tools_dir = base / "home", base / "Claude settings", base / "uv-tools"
     home.mkdir()
     env = subprocess_environment(independent=True)
+    env["RMG_RELEASE_TRANSPORT"] = "gh"
     uv = shutil.which("uv")
     assert uv
     env.update(UV_TOOL_DIR=str(tools_dir), UV_TOOL_BIN_DIR=str(base / "uv-bin"), UV_NO_CONFIG="1",

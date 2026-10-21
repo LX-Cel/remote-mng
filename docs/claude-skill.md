@@ -1,27 +1,14 @@
 # 安装工具和 Claude Code Skill
 
-remote-mng 0.4.0 随 Python 安装包和独立发行包分发个人 Skill。你在业务项目中用自然语言给 Claude 下任务，由它读取 Skill 并调用 CLI；你通过本地网页查看和管理状态。Skill 也包含查新、更新、回退和失败恢复流程。不需要记忆日常 CLI 命令，也不依赖 MCP。独立包无需准备 Python，见 [安装与升级指南](distribution.md)。
+remote-mng 随工具一起分发个人 Skill。开发者向 Claude Code 终端描述需求，Agent 读取 Skill 调用 CLI；本地网页显示设备、任务、日志和更新状态。无需另外复制 Skill 或配置 MCP。
 
-## 从私有仓库安装
+## 安装与更新
 
-准备 Python 3.11+、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和已配置 GitHub 认证的 Git。仓库目前为 **PRIVATE**，先确认当前账号有权限，再执行：
+推荐从 [README 的 Windows 或 Linux/WSL 入口](../README.md#一次安装之后用自然语言)安装：下载脚本后运行一次，程序与 Skill 一起安装并启动管理器。手动更新重跑同一脚本，日常直接告诉 Claude“更新 remote-mng”。
 
-```sh
-git clone https://github.com/LX-Cel/remote-mng.git
-cd remote-mng
-uv tool install .
-rmg setup --start-daemon
-```
+新简易入口随 **0.5.0** 制品发行后可用；当前分支是实现候选，尚未发布。当前可下载的 0.4.0 旧流程及离线安装见 [高级安装指南](distribution.md#已发布的-040-和离线安装)。公开仓库无需 GitHub 登录；Python、uv 和源码维护仅是高级备选，不是新用户的必需步骤。
 
-已经绑定 GitHub 账号的 SSH 密钥也可用于克隆：`git clone git@github.com:LX-Cel/remote-mng.git`。认证交给本地 Git 凭据管理器或 SSH，不要将访问令牌放进 URL、脚本或模型对话。仓库访问权限和本机远端设备认证是两件不同的事。
-
-旧文档中的匿名 Release 下载地址不适用于私有仓库。从有访问权限的 [GitHub Releases](https://github.com/LX-Cel/remote-mng/releases) 获得并核对 0.4.0 wheel 后，可执行 `uv tool install ./remote_mng-0.4.0-py3-none-any.whl`，再在普通系统终端中执行 `rmg setup --start-daemon`。资产是否可下载以实际发布状态为准；当前不通过 PyPI 包名安装。
-
-也可在自己的 Python 3.11+ 持久虚拟环境中执行 `python -m pip install .`，并在该环境中安装 Skill。不要从一次性的临时环境安装：Skill 入口绑定当前工具的 Python 环境，该环境之后仍需存在。
-
-如果安装器提示工具目录不在 PATH，运行 `uv tool update-shell` 后重开终端。Windows 原生、WSL 和 Linux 各自安装，工具路径、设备认证环境和状态目录不混用。
-
-Windows 的某些 Agent 宿主限制独立后台进程创建，安装阶段可在普通系统终端中尝试启动本地管理器，也可使用独立包提供的一键控制台入口；两者都要以实际结果为准。预启动管理器不能保证后续更新进程也能独立创建新管理器。0.4.0 会在停止旧管理器和切换版本前执行实际预检，不能通过 `blocked` 推断已经完成更新。旧版可能只报告 `process_breakaway_not_permitted`，应结合新版的数值诊断和阶段确认原因，不通过反复启动、WMI 或计划任务绕过限制。远端受管作业保留原 ID，恢复连接后继续查询；普通前台会话不会自动恢复。
+Windows 原生、WSL 和 Linux 各自安装，工具路径、认证环境和状态目录不混用。Windows 原生 Claude Code 需要 Git Bash。部分 Windows 宿主限制独立后台进程，安装和更新会据实际结果给出阻碍；不能通过已预启动管理器推断后续更新也一定成功，不能借计划任务或其他宿主绕过限制。
 
 ## 开始个人试用
 
@@ -59,53 +46,40 @@ Skill 入口只封装本地启动，不另建一套远程连接。CLI、本地�
 
 ## 升级旧版本
 
-0.4.0 使用 [统一更新流程](updates.md)：对 Claude 说“更新 remote-mng”，由 Skill 查新、固定计划、提交更新并持续查询。Agent 的最小流程是：
+已安装 0.4 及之后版本时，优先直接告诉 Claude“更新 remote-mng”；0.5 新入口发行后，也可重新运行原安装脚本。工具保留任务与原 job ID，并处理受支持安装的管理器停启和 Skill 更新。Agent 保存安装通道，预览用户不需要每次追加预览参数。完整状态、恢复及实际限制见 [更新指南](updates.md)。
+
+0.3 没有 `update`，运行中的旧管理器也缺少新版维护预留协议。新入口会报告阻碍并保留它，让 Agent 核对活动，在你确认普通前台可以断开后处理；不能为完成升级强停业务会话。受支持 uv 安装的快照迁移正在纳入 0.5 候选，具体以该版本实际验收为准。旧版本的历史证据保留在 [0.4 验收记录](v04-validation.md)。
+
+## 源码手工维护
+
+<details>
+<summary>展开：只适合明确选择源码或 Python 环境维护的开发者</summary>
+
+准备 Python 3.11+、Git 和 uv。在公开仓库中安装固定 tag：
 
 ```sh
-rmg update status --json
-rmg update check --json
-rmg update --plan-id PLAN_ID --json
-rmg update status --id UPDATE_ID --json
+git clone --branch v0.4.0 https://github.com/LX-Cel/remote-mng.git
+cd remote-mng
+uv tool install .
+rmg setup --start-daemon
 ```
 
-使用响应中的真实 `PLAN_ID` 和 `UPDATE_ID`。统一更新支持受管独立包和能够验证归属的普通 uv tool 环境；可编辑源码、未知 pip 环境和不满足校验条件的自定义环境会报告阻碍。程序、管理器与 Skill 状态集中展示，个人约定放在托管目录外。普通终端同样要通过当前进程中的独立创建预检；完整支持范围及本地验收见 [0.4 验收记录](v04-validation.md)，不能把受限模式的保护验收当作更新成功。
+这个旧版本示例不表示 0.5 已发布。普通 uv 环境会绑定持久工具路径；一次性临时环境不适合作为安装位置。若工具目录不在 PATH，按 uv 提示运行 `uv tool update-shell` 并重开终端。当前不通过 PyPI 包名安装。
 
-正式 0.3.0 没有 `update` 命令，需要一次旧流程进入 0.4.0。独立包用户在核对活动并停止旧管理器后，按 [发行包安装流程](distribution.md#首次安装) 更新；下面的多命令流程适用于旧源码安装，或明确选择源码手工维护的情况。完成迁移后新开 Claude Code 会话，才能使用新版 Skill 中的更新说明。
-
-先让 Agent 查询当前活动状态，保存作业 ID 和必要的日志游标。0.1 没有 task 命令，可以先用旧能力：
-
-```sh
-rmg server status --json
-rmg session list --json
-rmg operation list --json
-rmg job list lab --json
-```
-
-`lab` 替换为实际配置的目标；逐个核对正在使用的目标。0.2 用户还可以查 `task list`。旧管理进程不会热加载新版代码；升级之前确定普通交互终端何时可以断开，受管 job 则保存原 ID 供重连查询。
-
-在本地源码仓库拉取有权限访问的更新，并重新安装：
-
-```sh
-git pull --ff-only
-uv tool install --reinstall .
-rmg skill install
-rmg --version
-rmg skill status --json
-```
-
-如果有源码修改导致 Git 无法快进，先处理本地改动，不用 reset 覆盖。上面只更新工具和 Skill，仍运行的旧管理进程保留旧代码。这个手工迁移流程没有统一更新器的完整事务保护，应先确认启动环境可用并保存任务 ID。**确认普通交互终端可断开后**，执行：
+手工升级源码安装时，先让 Agent 核对活动前台、操作和原 job ID；在源码仓库中选择已核验的 tag 或提交，处理本地修改，不能用 reset 覆盖。确认普通前台可以断开后，在实际安装环境中停止管理器，再重装：
 
 ```sh
 rmg server stop
-rmg server start
+uv tool install --reinstall .
+rmg setup --start-daemon
 rmg doctor --json
 ```
 
-重启后按原 ID 查询 `job status`，在新版中使用 `task get --refresh` 查询已有任务。普通终端不会因重启自动接回；不能因为原前台消失就重发测试命令。此前运行的 0.1 操作历史可以查询，但不会自动生成 0.2 整体任务档案。
+这个多命令流程没有统一更新器的完整事务保护，只供明确选择源码手工维护的场景。`git pull` 只更新源码，不代表程序、管理器和 Skill 已更新。日常优先使用安装脚本或 Agent 统一更新。
 
-更新后新开 Claude 会话，让它加载新版 Skill。若只是凭据环境变化，值必须在新管理进程启动时存在；另一个终端里新增变量不会更新旧管理进程。
+重启后按原 ID 查询持久 job；普通终端不会自动接回，不能因为旧前台消失就重发测试。新开 Claude 会话加载新版 Skill；凭据环境变量也必须在新管理进程启动时存在。
 
-已进入 0.4.0 后，失败或中断的更新可让 Agent 先运行 `rmg update status --id FAILED_UPDATE_ID --json` 核对记录，再用 `rmg update recover --id FAILED_UPDATE_ID --json` 发起显式恢复。按恢复调用返回的新记录 ID 查询结果；恢复旧版不代表原升级成功，也不会重新提交远端任务。不要手工删除更新门禁或改版本指针来清除错误。
+</details>
 
 ## 完整性保护与卸载
 
@@ -136,4 +110,4 @@ rmg skill status --claude-dir /path/to/claude-config --json
 
 原始资源位于 `src/remote_mng/assets/claude_skill/remote-mng/`。手工复制原始目录时，源包装脚本调用 PATH 中的 `rmg`，因此必须确保 Claude 能找到工具。安装器生成的版本绑定本机 Python 路径或独立包稳定入口，不适合直接复制到另一台机器；换机器后在当地重新安装。
 
-当前 [0.4.0 为预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，需按固定版本安装；默认查新只选择正式发布。实现、实际 CI 结果、制品来源与支持边界见 [0.4 验收记录](v04-validation.md)。[0.3 验证](v03-validation.md)、[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 是各自版本的历史验收，不代表新版功能已经按同一条件全部验证。
+历史 [0.4.0 为预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，使用当时的固定版本安装流程；其默认查新只选择正式发布。0.5 候选加入持久更新通道与简易入口，不将该版历史验收视为新版已发布或已验收。实现、实际 CI 结果、制品来源与支持边界见 [0.4 验收记录](v04-validation.md)。[0.3 验证](v03-validation.md)、[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 是各自版本的历史验收，不代表新版功能已经按同一条件全部验证。

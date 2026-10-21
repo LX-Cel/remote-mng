@@ -231,16 +231,12 @@ async def test_real_uv_install_prepare_activate_and_offline_dependency_rollback(
                       f"installation['claude_dir']={str(claude)!r}\n"
                       "assert installation['source_updatable'], installation\n"
                       f"release={{'repository':'owner/repo','tag':'v1.0.1','version':'1.0.1','wheel':{{'asset':{new_wheel.name!r},'sha256':{source._hash(new_wheel)!r}}}}}\n"
-                      "original=s._run\n"
-                      "def download(args, **kwargs):\n"
-                      f"    if 'release' in args: shutil.copy2({str(new_wheel)!r}, {str(work / new_wheel.name)!r}); return b''\n"
-                      "    return original(args, **kwargs)\n"
-                      "s._run=download\n"
+                      "from remote_mng import releases as r\n"
+                      "def download(repository, tag, asset, digest, destination):\n"
+                      f"    shutil.copy2({str(new_wheel)!r}, destination)\n"
+                      "r.download_asset=download\n"
                       f"prepared=asyncio.run(s.prepare_source(release,{str(work)!r},installation))\n"
                       "print(json.dumps(prepared))\n", encoding="utf-8")
-    # Discovery needs an executable called gh, but the fixture download is local.
-    if shutil.which("gh") is None:
-        helper.write_text(helper.read_text(encoding="utf-8").replace("original=s._run", "s.shutil.which=lambda name: " + repr(uv) + "\noriginal=s._run"), encoding="utf-8")
     prepared_process = subprocess.run([str(python), str(helper)], env=env, capture_output=True, timeout=90)
     assert prepared_process.returncode == 0, prepared_process.stderr.decode(errors="replace")
     prepared = json.loads(prepared_process.stdout)
