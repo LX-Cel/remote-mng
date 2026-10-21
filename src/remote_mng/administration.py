@@ -206,7 +206,7 @@ class Administration:
             raise RemoteError("invalid_settings", "Unsupported or invalid console settings") from exc
         return result
 
-    def _transaction(self, action, transform, expected_revision, dry_run=True, *, name=None):
+    def _transaction(self, action, transform, expected_revision, dry_run=True, *, name=None, on_commit=None):
         if not isinstance(expected_revision, str) or not expected_revision or type(dry_run) is not bool:
             raise RemoteError("invalid_argument", "An exact configuration revision and boolean dry_run are required")
         with self.config.lock:
@@ -229,9 +229,81 @@ class Administration:
                 atomic_json(backup, before)
                 atomic_json(self.config.path, after)
                 result.update(revision=self.config._revision(after), backup_path=str(backup))
+            # Callers prevalidate this synchronous memory-only commit. It runs
+            # while the configuration lock is held, only after a successful
+            # disk write (or an unchanged document), before any await or audit.
+            if not dry_run and on_commit:
+                on_commit()
+            if differences and not dry_run:
                 self._apply_settings(after.get("settings", {}))
                 self._audit(action, name=name, revision=result["revision"], fields=[item["field"] for item in differences])
             return result
+
+    def _store_credential(self, name, value):
+        result = self.vault.set(name, value)
+        for session in self.manager.sessions.values():
+            session.redactor.add(value)
+            terminal_secrets = getattr(session.terminal, "_secrets", None)
+            if terminal_secrets is not None:
+                terminal_secrets.append(value)
+        return result
+
+    def save_target(self, params):
+        """Save a complete device form and its optional temporary password.
+
+        Passwords are prevalidated, held only in memory, and never enter the
+        reviewed document or audit payload. Preview and failed configuration
+        writes cannot change credentials used by an existing target.
+        """
+        name = _name(params.get("name"))
+        mode = params.get("mode")
+        if not isinstance(mode, str) or mode not in {"create", "replace"}:
+            raise RemoteError("invalid_argument", "Device save mode must be create or replace")
+        config = params.get("config")
+        if not isinstance(config, dict):
+            raise RemoteError("invalid_target", "A complete target configuration is required")
+        config = copy.deepcopy(config)
+        password = params.get("password")
+        has_password = "password" in params
+        credential_name = None
+        if has_password:
+            self.vault.validate_value(password)
+            # Device names allow Unicode; vault names deliberately use ASCII.
+            # This name survives manager restarts without asking users to copy
+            # opaque references between settings and the connection form.
+            credential_name = "device-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:24] + "-password"
+            reference = self.vault.reference(credential_name)
+            config["password_ref"] = reference
+            config.pop("password_env", None)
+            flow = config.get("login_flow")
+            for steps in (config.get("login_steps"), flow.get("steps") if isinstance(flow, dict) else None):
+                for step in steps if isinstance(steps, list) else []:
+                    if isinstance(step, dict) and step.get("send_ref") == "__device_password__":
+                        step["send_ref"] = reference
+
+        def transform(document):
+            entries = document.setdefault("targets", {})
+            if mode == "create" and name in entries:
+                raise RemoteError("target_exists", "This name already exists; choose another name")
+            if mode == "replace" and name not in entries:
+                raise RemoteError("target_not_found", "Unknown configuration name")
+            entries[name] = config
+            return document
+
+        def commit_password():
+            self._store_credential(credential_name, password)
+
+        result = self._transaction("target.save", transform, params.get("expected_revision"),
+                                   params.get("dry_run", True), name=name,
+                                   on_commit=commit_password if has_password else None)
+        result["config"] = result["config"]["targets"][name]
+        result["password_updated"] = has_password and not result["dry_run"]
+        if result["password_updated"] and not result["diff"]:
+            self._audit("target.save", name=name, revision=result["revision"], fields=["password_ref"])
+        if has_password:
+            result["credential_storage"] = "memory"
+            result["credential_expires"] = "manager_restart"
+        return result
 
     def get_target(self, name):
         value = self.config.snapshot(_name(name))
@@ -273,6 +345,8 @@ class Administration:
             return await self.state()
         if action == "target.get":
             return self.get_target(params.get("name"))
+        if action == "target.save":
+            return self.save_target(params)
         if action == "profile.get":
             with self.config.lock:
                 data = self.config.read()
@@ -310,12 +384,7 @@ class Administration:
             return self._transaction(action, lambda doc: {**doc, "settings": _merge(doc.get("settings", {}), patch)},
                                      params.get("expected_revision"), params.get("dry_run", True))
         if action == "credential.set":
-            result = self.vault.set(params.get("name"), params.get("value"))
-            for session in self.manager.sessions.values():
-                session.redactor.add(params["value"])
-                terminal_secrets = getattr(session.terminal, "_secrets", None)
-                if terminal_secrets is not None:
-                    terminal_secrets.append(params["value"])
+            result = self._store_credential(params.get("name"), params.get("value"))
             self._audit(action, name=result["name"])
             return result
         if action == "credential.delete":

@@ -97,6 +97,164 @@ async def test_memory_credentials_transport_redaction_export_and_restart(adminis
     assert restored["reference"] == credential["reference"]
 
 
+async def test_inline_device_password_preview_and_save_are_one_reviewed_change(administration):
+    admin = administration
+    password = "inline-password-never-persist"
+    params = {"name": "开发板", "mode": "create", "config": {"host": "lab.invalid", "password_env": "OLD_PASSWORD"},
+              "password": password, "expected_revision": revision(admin)}
+    preview = await admin.call("target.save", params)
+    reference = preview["config"]["password_ref"]
+    assert preview["dry_run"] and preview["password_updated"] is False
+    assert "password_env" not in preview["config"]
+    assert admin.vault.list() == [] and admin.config.read()["targets"] == {}
+    with pytest.raises(RemoteError):
+        resolve_reference(reference)
+    assert password not in json.dumps(preview)
+    saved = await admin.call("target.save", {**params, "dry_run": False})
+    assert saved["password_updated"] and saved["credential_expires"] == "manager_restart"
+    assert resolve_reference(reference) == password
+    assert admin.config.target("开发板")["password_ref"] == reference
+    assert password not in admin.config.path.read_text(encoding="utf-8")
+    assert password not in json.dumps(await admin.call("config.export"))
+    assert password not in json.dumps(admin.manager.store.list())
+    for backup in admin.backups():
+        assert password not in (admin.config.home / "config-backups" / backup["name"]).read_text(encoding="utf-8")
+
+
+async def test_inline_password_rotation_preview_conflict_and_write_error_keep_old_secret(administration, monkeypatch):
+    admin = administration
+    first = await mutate(admin, "target.save", name="lab", mode="create", config={"host": "lab.invalid"}, password="old-password")
+    reference = first["config"]["password_ref"]
+    params = {"name": "lab", "mode": "replace", "config": {**first["config"], "encoding": "ascii"},
+              "password": "new-password", "expected_revision": revision(admin)}
+    await admin.call("target.save", params)
+    assert resolve_reference(reference) == "old-password"
+    with pytest.raises(RemoteError) as conflict:
+        await admin.call("target.save", {**params, "expected_revision": "stale", "dry_run": False})
+    assert conflict.value.code == "config_conflict"
+    assert resolve_reference(reference) == "old-password"
+    from remote_mng import administration as module
+    original = module.atomic_json
+    def failed_write(path, document):
+        if path == admin.config.path:
+            raise OSError("simulated disk failure")
+        return original(path, document)
+    monkeypatch.setattr(module, "atomic_json", failed_write)
+    with pytest.raises(OSError):
+        await admin.call("target.save", {**params, "dry_run": False})
+    assert resolve_reference(reference) == "old-password"
+    assert admin.config.target("lab")["encoding"] == "utf-8"
+
+
+async def test_inline_password_reentry_and_unchanged_form_preserve_reference(administration):
+    admin = administration
+    first = await mutate(admin, "target.save", name="lab", mode="create", config={"host": "lab.invalid"}, password="first")
+    config = first["config"]
+    reference = config["password_ref"]
+    saved = await mutate(admin, "target.save", name="lab", mode="replace", config={**config, "encoding": "ascii"})
+    assert saved["password_updated"] is False and resolve_reference(reference) == "first"
+    admin.vault.clear()
+    assert admin.get_target("lab")["authentication"]["state"] == "missing"
+    saved = await mutate(admin, "target.save", name="lab", mode="replace", config=saved["config"], password="second")
+    assert saved["diff"] == [] and saved["password_updated"]
+    assert saved["config"]["password_ref"] == reference
+    assert resolve_reference(reference) == "second"
+    assert admin.get_target("lab")["authentication"]["state"] == "ready"
+    assert admin.manager.store.list("console_audit")[-1]["action"] == "target.save"
+
+
+async def test_inline_device_save_preserves_identity_guard_and_does_not_overwrite_existing(administration):
+    admin = administration
+    first = await mutate(admin, "target.save", name="lab", mode="create", config={"host": "lab.invalid"}, password="original")
+    reference = first["config"]["password_ref"]
+    with pytest.raises(RemoteError) as exists:
+        await mutate(admin, "target.save", name="lab", mode="create", config={"host": "other.invalid"}, password="replacement")
+    assert exists.value.code == "target_exists"
+    admin.manager.store.put({"id": "durable", "kind": "job_reference", "target": "lab", "job_id": "remote1", "state": "succeeded"})
+    with pytest.raises(RemoteError) as guarded:
+        await mutate(admin, "target.save", name="lab", mode="replace", config={"host": "other.invalid"}, password="replacement")
+    assert guarded.value.code == "target_in_use"
+    assert resolve_reference(reference) == "original"
+    assert admin.config.target("lab")["host"] == "lab.invalid"
+    # Repairing credentials keeps the route and existing durable queries intact.
+    changed = await mutate(admin, "target.save", name="lab", mode="replace", config=first["config"], password="replacement")
+    assert changed["password_updated"] and resolve_reference(reference) == "replacement"
+
+
+@pytest.mark.parametrize("password", ["", None, 123, "contains\x00nul", "x" * 65537],
+                         ids=["empty", "null", "number", "nul", "oversize"])
+async def test_inline_password_validation_never_changes_config_or_vault(administration, password):
+    admin = administration
+    before = revision(admin)
+    with pytest.raises(RemoteError) as invalid:
+        await admin.call("target.save", {"name": "lab", "mode": "create", "config": {"host": "lab.invalid"},
+                         "password": password, "expected_revision": before, "dry_run": False})
+    assert invalid.value.code == "invalid_credential"
+    assert revision(admin) == before and admin.vault.list() == []
+
+
+async def test_inline_telnet_password_populates_structured_login_and_redacts_echo(administration, telnet_target):
+    admin = administration
+    config = copy.deepcopy(telnet_target)
+    config.pop("password_env", None)
+    config["login_steps"][1] = {"expect": "Password: ", "send_ref": "__device_password__"}
+    result = await mutate(admin, "target.save", name="terminal", mode="create", config=config, password="inline-telnet-secret")
+    saved = result["config"]
+    assert saved["login_steps"][1]["send_ref"] == saved["password_ref"]
+    terminal = await open_terminal(saved)
+    try:
+        assert "inline-telnet-secret" not in terminal.initial_output
+        assert "[REDACTED]" in terminal.initial_output
+    finally:
+        await terminal.close()
+
+
+async def test_inline_password_rebinds_advanced_login_flow_without_changing_route(administration):
+    admin = administration
+    reference = "memory:1234567890abcdef1234:old"
+    flow = {"start": "password", "steps": [
+        {"id": "password", "expect": "custom password:", "send_ref": reference, "next": "ready"},
+        {"id": "ready", "expect": "ready>", "finish": True}]}
+    first = await mutate(admin, "target.save", name="lab", mode="create",
+        config={"protocol": "telnet", "host": "lab.invalid", "password_ref": reference, "login_flow": flow})
+    config = first["config"]
+    config["login_flow"]["steps"][0]["send_ref"] = "__device_password__"
+    saved = await mutate(admin, "target.save", name="lab", mode="replace", config=config, password="replacement")
+    expected = copy.deepcopy(flow)
+    expected["steps"][0]["send_ref"] = saved["config"]["password_ref"]
+    assert saved["config"]["login_flow"] == expected
+    assert resolve_reference(saved["config"]["password_ref"]) == "replacement"
+
+
+async def test_inline_ssh_password_authenticates_against_loopback(administration, tmp_path):
+    password = "ssh-inline-test-password"
+    class PasswordServer(asyncssh.SSHServer):
+        def begin_auth(self, username):
+            return True
+        def password_auth_supported(self):
+            return True
+        def validate_password(self, username, supplied):
+            return username == "tester" and supplied == password
+    async def process_handler(process):
+        process.stdout.write("authenticated> ")
+        await process.stdin.read()
+        process.exit(0)
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    server = await asyncssh.create_server(PasswordServer, "127.0.0.1", 0,
+        server_host_keys=[key], process_factory=process_handler)
+    hosts = tmp_path / "hosts"
+    hosts.write_text(f"[127.0.0.1]:{server.get_port()} {key.export_public_key().decode()}", encoding="utf-8")
+    try:
+        result = await mutate(administration, "target.save", name="ssh", mode="create", password=password,
+            config={"host": "127.0.0.1", "port": server.get_port(), "username": "tester",
+                    "known_hosts": str(hosts), "ssh_config": [], "client_keys": [], "connect_timeout": 3})
+        terminal = await open_terminal(result["config"])
+        await terminal.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 async def test_telnet_login_with_temporary_reference_redacts_fragmented_echo(administration, telnet_target):
     admin = administration
     credential = await admin.call("credential.set", {"name": "terminal-password", "value": "secret-memory-login"})

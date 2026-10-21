@@ -301,7 +301,11 @@
     if (!changed("targets", [targets, [...busyTargets]])) return;
     const container = $("targets");
     container.replaceChildren();
-    if (!targets.length) container.append(empty("还没有配置设备。进入“设备”页面，添加 SSH 或 Telnet 连接。"));
+    if ($("overview-onboarding")) $("overview-onboarding").hidden = Boolean(targets.length);
+    if (!targets.length) {
+      container.append(empty("先添加一台 SSH 或 Telnet 设备，之后 Agent 和你都能使用同一份连接配置。"));
+      container.append(button("添加第一台设备", () => { if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:edit-target", {detail: null})); }));
+    }
     for (const target of targets) {
       const check = target.inspection || target.last_check;
       const card = el("article", null, "target-card");
@@ -326,13 +330,10 @@
         card.append(el("p", `Helper 存储：已用 ${bytes(target.storage.used_bytes)} · 可用 ${bytes(target.storage.free_bytes)} · 每流上限 ${bytes(target.storage.max_log_bytes)}`, "small"));
         card.append(el("p", "存储观测 · " + stamp(target.storage.checked_at), "small"));
       }
-      const healthButton = button("检查存储", async () => {
-        healthButton.disabled = true;
-        try { await api("targets/" + encodeURIComponent(target.name) + "/health", "POST"); notice(); await refreshOverview(); }
-        catch (error) { notice(error.message); }
-        finally { healthButton.disabled = false; }
-      });
-      const checkButton = button(busyTargets.has(target.name) ? "检查中…" : "检查设备", async () => {
+      const editButton = button("编辑连接", () => { if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:edit-target", {detail: target.name})); });
+      const terminalButton = button("打开终端", () => { if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:terminal-target", {detail: target.name})); });
+      const checkButton = button(busyTargets.has(target.name) ? "检查中…" : "测试连接", async () => {
+        if (typeof CustomEvent !== "undefined") { document.dispatchEvent(new CustomEvent("rmg:test-target", {detail: target.name})); return; }
         busyTargets.add(target.name);
         renderTargets(snapshot.targets);
         try {
@@ -342,7 +343,7 @@
         finally { busyTargets.delete(target.name); await refreshOverview(); }
       });
       checkButton.disabled = busyTargets.has(target.name);
-      bottom.append(el("span", check ? stamp(check.checked_at || check.observed_at) : "远端状态尚未检查", "small"), checkButton, healthButton);
+      bottom.append(el("span", check ? "最近检查 · " + stamp(check.checked_at || check.observed_at) : "已保存 · 尚未测试", "small"), checkButton, terminalButton, editButton);
       card.append(bottom);
       container.append(card);
     }
@@ -352,7 +353,7 @@
     if (!changed("tasks", [tasks, selectedTask])) return;
     const container = $("tasks");
     container.replaceChildren();
-    if (!tasks.length) container.append(empty("还没有任务记录。Agent 通过 task 命令创建任务后，执行步骤会显示在这里。"));
+    if (!tasks.length) container.append(empty("还没有任务。让 Agent 使用已配置的设备执行工作，或在“常用操作”中保存并运行命令。执行过程和结果会显示在这里。"));
     for (const task of tasks) {
       const row = button("", async () => { selectedTask = task.id; renderTasks(snapshot.tasks); await refreshTask(); }, "task-row" + (selectedTask === task.id ? " selected" : ""));
       row.setAttribute("aria-pressed", String(selectedTask === task.id));

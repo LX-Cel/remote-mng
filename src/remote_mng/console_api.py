@@ -20,6 +20,7 @@ from .errors import RemoteError
 
 _ADMIN_FIELDS = {
     "target.get": {"name"},
+    "target.save": {"name", "config", "mode", "password", "expected_revision", "dry_run"},
     "target.create": {"name", "config", "expected_revision", "dry_run"},
     "target.patch": {"name", "patch", "expected_revision", "dry_run"},
     "target.delete": {"name", "expected_revision", "dry_run"},

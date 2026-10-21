@@ -46,12 +46,21 @@ class CredentialVault:
         self.scope = hashlib.sha256(str(home).encode()).hexdigest()[:20]
         self.entries: dict[str, str] = {}
 
-    def set(self, name, value):
+    def reference(self, name):
+        """Compute a reference without storing or changing a credential."""
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
             raise RemoteError("invalid_credential", "Credential name must contain 1..80 letters, digits, '.', '_' or '-'")
+        return f"memory:{self.scope}:{name}"
+
+    @staticmethod
+    def validate_value(value):
         if not isinstance(value, str) or not value or len(value) > 65536 or "\x00" in value:
             raise RemoteError("invalid_credential", "A nonempty credential of at most 65536 characters is required")
-        reference = self.entries.setdefault(name, f"memory:{self.scope}:{name}")
+
+    def set(self, name, value):
+        reference = self.reference(name)
+        self.validate_value(value)
+        self.entries[name] = reference
         _VALUES[reference] = value
         return {"name": name, "reference": reference, "storage": "memory", "available": True,
                 "expires": "manager_restart"}

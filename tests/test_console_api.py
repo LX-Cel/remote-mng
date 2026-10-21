@@ -466,6 +466,36 @@ async def test_real_configuration_transactions_refs_conflicts_and_export(real_co
     assert "PRIVATE_TEST_VALUE" not in str(manager.store.list("console_audit"))
 
 
+async def test_real_inline_device_password_is_previewed_without_storing_or_exposing_it(real_console):
+    client, manager, target = real_console
+    console = (client, manager)
+    original = await state(real_console)
+    password = "INLINE_DEVICE_HTTP_SECRET"
+    body = {"name": "inline", "mode": "create", "config": target, "password": password,
+            "expected_revision": original["revision"], "dry_run": True}
+    preview = await post(console, "admin/target.save", body)
+    assert preview.status == 200, await preview.text()
+    assert password not in await preview.text()
+    assert manager.console.administration.vault.list() == []
+    assert manager.config.read()["targets"] == {}
+    saved = await post(console, "admin/target.save", {**body, "dry_run": False})
+    assert saved.status == 200, await saved.text()
+    assert password not in await saved.text()
+    result = (await saved.json())["result"]
+    assert result["password_updated"]
+    assert result["config"]["password_ref"].startswith("memory:")
+    current = await state(real_console)
+    assert current["targets"][0]["authentication"]["state"] == "ready"
+    assert password not in json.dumps(current)
+    assert password not in manager.config.path.read_text(encoding="utf-8")
+    assert password not in json.dumps(manager.store.list("console_audit"))
+    exported = await post(console, "admin/config.export")
+    assert password not in await exported.text()
+    # Same-origin authentication still covers the new form action.
+    denied = await client.post("/ui/api/admin/target.save", headers=headers(client, origin=False), json=body)
+    assert denied.status == 403
+
+
 async def test_real_ssh_console_input_takeover_expiry_and_explicit_handback(real_console):
     client, manager, target = real_console
     manager.config.put("lab", target)

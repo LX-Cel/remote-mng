@@ -1,65 +1,743 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>remote-mng · 本地控制台</title>
-  <link rel="stylesheet" href="/ui/style.css">
-  <script src="/ui/app.js" defer></script>
-  <script src="/ui/console.js" defer></script>
-</head>
-<body>
-  <div class="shell">
-    <header class="topbar">
-      <div class="brand"><span class="brand-mark">r</span><div><h1>remote-mng</h1><p>个人远程开发控制台</p></div></div>
-      <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-state">正在连接本地管理器</span><button id="logout" class="quiet">锁定</button></div>
-    </header>
-    <div id="notice" role="status" class="notice" hidden></div>
-    <nav class="workspace-nav" aria-label="控制台页面"><button data-view="overview" aria-current="page">总览</button><button data-view="devices">设备</button><button data-view="tasks">任务</button><button data-view="sessions">会话</button><button data-view="settings">设置</button></nav>
-    <main>
-      <section class="intro"><div><span class="eyebrow">DEVELOPER WORKSPACE</span><h2 id="page-heading">掌握环境，也掌握执行。</h2><p id="page-description">配置设备、检查过程、接管调试。你和 Agent 使用同一份真实状态。</p></div><div class="last-update"><span id="server-version"></span><span id="last-update">尚未读取状态</span></div></section>
-      <div data-page="overview">
-      <section class="metrics" aria-label="状态概览">
-        <div><span>已配置设备</span><strong id="count-targets">—</strong><small>按需检查远端能力</small></div>
-        <div><span>进行中的任务</span><strong id="count-running">—</strong><small>最近 100 条任务中的状态</small></div>
-        <div><span>需要关注</span><strong id="count-attention">—</strong><small>设备故障与任务待确认状态</small></div>
-        <div><span>交互会话</span><strong id="count-sessions">—</strong><small>连接状态不等于任务状态</small></div>
-      </section>
-      <section class="panel"><div class="panel-heading"><div><h2>需要关注</h2><p>根据失败阶段检查设备配置，或进入原任务查询结果。</p></div></div><div id="attention" class="target-grid"></div></section>
-      <section class="panel"><div class="panel-heading"><div><h2>设备</h2><p>展示最近一次检查；不会在后台自动探测设备。</p></div></div><div id="targets" class="target-grid"></div></section>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>remote-mng · 远程开发控制台</title>
+    <link rel="stylesheet" href="/ui/style.css">
+    <script src="/ui/app.js" defer>
+    </script>
+    <script src="/ui/console.js" defer>
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">r</span>
+          <div>
+            <h1>remote-mng</h1>
+            <p>远程开发控制台</p>
+          </div>
+        </div>
+        <p class="nav-caption">工作区</p>
+        <nav class="workspace-nav" aria-label="控制台页面">
+          <button data-view="overview" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">▦</span>
+            <span>工作总览</span>
+          </button>
+          <button data-view="devices">
+            <span class="nav-icon" aria-hidden="true">▤</span>
+            <span>设备连接</span>
+          </button>
+          <button data-view="tasks">
+            <span class="nav-icon" aria-hidden="true">≡</span>
+            <span>任务与日志</span>
+          </button>
+          <button data-view="sessions">
+            <span class="nav-icon terminal-icon" aria-hidden="true">›_</span>
+            <span>终端调试</span>
+          </button>
+          <button data-view="operations">
+            <span class="nav-icon" aria-hidden="true">▷</span>
+            <span>常用操作</span>
+          </button>
+          <button data-view="settings">
+            <span class="nav-icon" aria-hidden="true">⚙</span>
+            <span>工具设置</span>
+          </button>
+        </nav>
+        <div class="sidebar-note">
+          <span class="sidebar-note-icon" aria-hidden="true">↔</span>
+          <strong>与 Agent 共用一个工作区</strong>
+          <p>Agent 负责执行。你可以管理设备、查看进度，随时接管终端。</p>
+        </div>
+        <div class="sidebar-foot">
+          <span class="local-indicator" aria-hidden="true">
+          </span>本机运行 · 配置保存在本机</div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="workspace-label">开发者工作区 <span>/</span> 本地控制台</div>
+          <div class="connection">
+            <span id="connection-dot" class="dot">
+            </span>
+            <span id="connection-state">正在连接本地管理器</span>
+            <button id="logout" class="quiet">锁定控制台</button>
+          </div>
+        </header>
+        <main id="main-content">
+          <div id="notice" role="status" class="notice" hidden>
+          </div>
+          <section class="intro">
+            <div>
+              <span class="eyebrow">REMOTE DEVELOPMENT</span>
+              <h2 id="page-heading">远程工作总览</h2>
+              <p id="page-description">先连接设备，再让 Agent 执行工作。在这里查看进度，需要时接过终端。</p>
+            </div>
+            <div class="last-update">
+              <span id="server-version">
+              </span>
+              <span id="last-update">尚未读取状态</span>
+            </div>
+          </section>
+          <div data-page="overview">
+            <section id="overview-onboarding" class="getting-started" aria-labelledby="getting-started-title">
+              <div class="getting-started-heading">
+                <span class="section-kicker">从这里开始</span>
+                <h2 id="getting-started-title">把设备连接好，剩下的交给 Agent。</h2>
+                <p>配置、执行和调试使用同一份记录，不用在多个工具之间来回确认。</p>
+              </div>
+              <div class="start-steps">
+                <button class="start-step" data-go-view="devices">
+                  <span class="step-number">1</span>
+                  <span>
+                    <strong>连接你的设备</strong>
+                    <small>填写地址和登录信息，测试连接</small>
+                  </span>
+                  <span class="step-arrow" aria-hidden="true">→</span>
+                </button>
+                <button class="start-step" data-go-view="tasks">
+                  <span class="step-number">2</span>
+                  <span>
+                    <strong>查看 Agent 的工作</strong>
+                    <small>部署、命令和长任务都有记录</small>
+                  </span>
+                  <span class="step-arrow" aria-hidden="true">→</span>
+                </button>
+                <button class="start-step" data-go-view="sessions">
+                  <span class="step-number">3</span>
+                  <span>
+                    <strong>需要时亲自调试</strong>
+                    <small>观察输出，接管后输入命令</small>
+                  </span>
+                  <span class="step-arrow" aria-hidden="true">→</span>
+                </button>
+              </div>
+            </section>
+            <section class="metrics" aria-label="状态概览">
+              <div>
+                <span>已添加设备</span>
+                <strong id="count-targets">—</strong>
+                <small>在“设备连接”中管理</small>
+              </div>
+              <div>
+                <span>正在执行</span>
+                <strong id="count-running">—</strong>
+                <small>最近 100 条任务</small>
+              </div>
+              <div>
+                <span>需要关注</span>
+                <strong id="count-attention">—</strong>
+                <small>查看失败与待确认结果</small>
+              </div>
+              <div>
+                <span>交互会话</span>
+                <strong id="count-sessions">—</strong>
+                <small>观察或接管调试</small>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>需要你关注</h2>
+                  <p>失败的连接、执行异常和结果待确认的任务会出现在这里。</p>
+                </div>
+              </div>
+              <div id="attention" class="target-grid">
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>我的设备</h2>
+                  <p>显示最近一次检查结果；打开页面不会自动连接远端。</p>
+                </div>
+                <button class="quiet" data-go-view="devices">管理设备 →</button>
+              </div>
+              <div id="targets" class="target-grid">
+              </div>
+            </section>
+          </div>
+          <div data-page="devices" hidden>
+            <p id="device-feedback" class="inline-message" role="status" hidden>
+            </p>
+            <section class="panel device-directory">
+              <div class="panel-heading">
+                <div>
+                  <h2>我的设备</h2>
+                  <p>添加服务器或开发板，让 Agent 和你使用同一套连接配置。</p>
+                </div>
+                <div class="actions">
+                  <button id="add-device">
+                    <span aria-hidden="true">＋</span> 添加设备</button>
+                  <button id="refresh-admin" class="quiet">刷新</button>
+                </div>
+              </div>
+              <div class="directory-tools">
+                <label class="search-field" for="device-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input id="device-search" type="search" autocomplete="off" placeholder="搜索设备名称、地址或用户名">
+                </label>
+                <span class="small">SSH / Telnet</span>
+              </div>
+              <div id="device-list-empty" class="empty-state" hidden>
+                <span class="empty-state-icon" aria-hidden="true">↔</span>
+                <h3>添加第一台远程设备</h3>
+                <p>准备设备地址、用户名和密码或私钥，就可以开始。</p>
+                <button type="button" data-add-device>＋ 添加第一台设备</button>
+              </div>
+              <div id="device-list" class="target-grid">
+              </div>
+            </section>
+            <section id="device-editor-panel" class="panel device-editor" hidden>
+              <div class="panel-heading">
+                <div>
+                  <span class="section-kicker">连接配置</span>
+                  <h2 id="device-editor-title">添加设备</h2>
+                  <p>填写连接信息，保存后即可测试。密码直接输入，不需要复制凭据引用。</p>
+                </div>
+                <button id="close-device-editor" class="quiet">取消编辑</button>
+              </div>
+              <form id="device-form" class="editor-form">
+                <fieldset>
+                  <legend>
+                    <span class="section-number">1</span> 连接到哪里</legend>
+                  <div class="form-grid connection-grid">
+                    <label>设备名称 <span class="required">*</span>
+                      <input id="device-name" required maxlength="80" placeholder="例如 lab-board">
+                      <small>给设备起一个容易识别的名字</small>
+                    </label>
+                    <label>连接方式<select id="device-protocol">
+                        <option value="ssh">SSH（服务器 / Linux 设备）</option>
+                        <option value="telnet">Telnet（嵌入式设备 / 专用终端）</option>
+                      </select>
+                    </label>
+                    <label class="field-wide">设备地址 <span class="required">*</span>
+                      <input id="device-host" required placeholder="例如 192.168.1.100 或 server.example.com" autocomplete="off">
+                    </label>
+                    <label>端口<input id="device-port" type="number" min="1" max="65535" placeholder="SSH 默认 22 / Telnet 默认 23">
+                      <small>使用默认端口可留空</small>
+                    </label>
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>
+                    <span class="section-number">2</span> 怎样登录</legend>
+                  <div class="form-grid">
+                    <label>用户名<input id="device-username" autocomplete="username" placeholder="例如 root 或 developer">
+                    </label>
+                    <label id="device-auth-label">登录方式<select id="device-auth">
+                        <option value="password">密码登录</option>
+                        <option value="key">私钥文件登录</option>
+                        <option value="agent">SSH Agent / 系统默认密钥</option>
+                        <optgroup label="高级：使用已有凭据引用">
+                          <option value="memory">临时凭据引用</option>
+                          <option value="environment">环境变量</option>
+                        </optgroup>
+                      </select>
+                    </label>
+                    <div id="device-password-field" class="password-field">
+                      <label for="device-password">登录密码</label>
+                      <div class="password-input">
+                        <input id="device-password" type="password" autocomplete="new-password" placeholder="输入此设备的登录密码">
+                        <button id="device-password-toggle" class="quiet" type="button" aria-label="显示密码" aria-pressed="false">显示</button>
+                      </div>
+                      <p id="device-password-status" class="field-hint">仅保存在本地管理器内存，重启后需重新输入。</p>
+                    </div>
+                    <label id="device-keys-field" hidden>私钥文件路径<textarea id="device-keys" rows="2" spellcheck="false" placeholder="例如 C:\Users\you\.ssh\id_ed25519">
+                      </textarea>
+                      <small>填写本机路径；多个私钥可每行一个</small>
+                    </label>
+                    <label id="device-credential-field" hidden>已有凭据引用 / 环境变量名<input id="device-credential" spellcheck="false" placeholder="高级：使用管理器中已有的引用">
+                    </label>
+                  </div>
+                  <p id="device-auth-advice" class="field-hint">密码不会写入设备配置，也不会包含在配置导出中。</p>
+                  <div id="telnet-login-fields" class="subsection" hidden>
+                    <h3>Telnet 登录步骤</h3>
+                    <div class="form-grid">
+                      <label>登录流程<select id="telnet-login-mode">
+                          <option value="none">只连接，不自动输入</option>
+                          <option value="user-password">依次输入用户名和密码</option>
+                          <option value="password">只输入密码</option>
+                          <option value="advanced">自定义高级登录流程</option>
+                        </select>
+                      </label>
+                      <label>用户名提示符（正则）<input id="telnet-user-prompt" value="(?i)(login|username):\s*$" spellcheck="false">
+                      </label>
+                      <label>密码提示符（正则）<input id="telnet-password-prompt" value="(?i)password:\s*$" spellcheck="false">
+                      </label>
+                    </div>
+                    <p class="small">自动登录使用上方的用户名和密码。设备提示符不同时可调整匹配规则。</p>
+                  </div>
+                </fieldset>
+                <details id="device-auth-advanced">
+                  <summary>高级选项 <span>跳板、代理、编码、传包与专用登录流程</span>
+                  </summary>
+                  <div class="form-grid">
+                    <label>终端编码<input id="device-encoding" value="utf-8">
+                    </label>
+                    <label>连接超时（秒）<input id="device-timeout" type="number" min="1" max="300" value="15">
+                    </label>
+                    <label>远端命令环境<select id="device-shell">
+                        <option value="posix">POSIX shell（常见 Linux）</option>
+                        <option value="unknown">未知 / 专用前台</option>
+                      </select>
+                    </label>
+                    <label>Helper 安装目录<input id="device-helper" value="~/.local/share/remote-mng">
+                    </label>
+                    <label>私钥口令临时引用（可选）<input id="device-passphrase" spellcheck="false">
+                    </label>
+                  </div>
+                  <h3>独立 SSH 传包通道（可选）</h3>
+                  <p class="small">主要用于通过 Telnet 调试、通过 SSH 传包的设备。</p>
+                  <div class="form-grid">
+                    <label>传包地址<input id="device-transfer-host" placeholder="留空使用当前连接配置">
+                    </label>
+                    <label>传包用户名<input id="device-transfer-user">
+                    </label>
+                    <label>传包端口<input id="device-transfer-port" type="number" min="1" max="65535" placeholder="22">
+                    </label>
+                    <label>传包密码临时引用<input id="device-transfer-ref" spellcheck="false">
+                    </label>
+                  </div>
+                  <label>其他连接参数（JSON）<textarea id="device-advanced" rows="6" spellcheck="false">{}</textarea>
+                  </label>
+                  <p class="small">支持 jump、proxy、login_steps、login_flow 等字段。密码使用 send_ref 或 send_env 引用；保留未修改的高级字段。</p>
+                </details>
+                <p id="device-error" class="inline-message" role="alert" hidden>
+                </p>
+                <div class="form-footer">
+                  <p class="small">保存配置不会主动连接设备。</p>
+                  <div class="actions">
+                    <button id="reset-device" type="button" class="quiet">取消</button>
+                    <button type="submit">保存设备</button>
+                    <button id="device-test-saved" type="button">保存并测试连接</button>
+                  </div>
+                </div>
+              </form>
+            </section>
+            <section class="panel device-maintenance">
+              <div class="panel-heading">
+                <div>
+                  <h2 id="manage-target-title">测试连接与设备维护</h2>
+                  <p id="manage-target-address">保存设备后，先测试连接。需要断线后查询长任务时，再安装远端助手。</p>
+                </div>
+              </div>
+              <div class="editor-form">
+                <div class="connection-test-bar">
+                  <label for="manage-target">选择设备<select id="manage-target">
+                    </select>
+                  </label>
+                  <button id="diagnose-target">测试连接</button>
+                  <p class="small">核对地址、登录和远端能力，定位具体失败阶段。</p>
+                </div>
+                <div id="device-action-result" class="action-result" role="status">
+                </div>
+                <div class="maintenance-grid">
+                  <details class="maintenance-item">
+                    <summary>首次 SSH 连接：确认主机身份</summary>
+                    <p class="small">从设备管理员或服务器控制台核对指纹，确认无误后再信任。更换密钥也需要重新核对。</p>
+                    <div class="actions">
+                      <select id="hostkey-endpoint" aria-label="主机身份端点">
+                        <option value="target">目标 SSH</option>
+                        <option value="jump">跳板 SSH</option>
+                        <option value="transfer">传包 SSH</option>
+                        <option value="transfer.jump">传包跳板 SSH</option>
+                      </select>
+                      <button id="probe-hostkey" class="quiet">读取主机指纹</button>
+                    </div>
+                  </details>
+                  <details class="maintenance-item">
+                    <summary>后台任务支持（远端助手）</summary>
+                    <p class="small">助手运行在设备上，记录长任务状态与日志。本地断线后，Agent 可以重新连接查询原任务。</p>
+                    <div class="actions">
+                      <button id="helper-install" class="quiet">安装 / 更新助手</button>
+                      <button id="helper-health" class="quiet">检查助手存储</button>
+                    </div>
+                    <details class="cleanup-details">
+                      <summary>清理已完成作业的日志</summary>
+                      <label class="helper-cleanup-ids">作业 ID（每行一个）<textarea id="helper-job-ids" rows="2" spellcheck="false" placeholder="从任务详情复制 job_id">
+                        </textarea>
+                      </label>
+                      <p class="small">只清理明确选择的作业。任务详情也可直接预览清理。</p>
+                      <button id="helper-cleanup" class="quiet">预览日志清理</button>
+                    </details>
+                  </details>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div data-page="tasks" hidden>
+            <div class="context-note">
+              <span aria-hidden="true">ⓘ</span>
+              <p>这里展示 Agent 和常用操作产生的真实任务。遇到“结果待确认”，先查询原任务，避免重复部署。</p>
+            </div>
+            <div class="work-grid">
+              <section class="panel task-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2>执行记录</h2>
+                    <p id="task-list-scope">选择一条任务，查看执行步骤和输出。</p>
+                  </div>
+                  <button id="refresh-overview" class="quiet">刷新列表</button>
+                </div>
+                <div id="tasks" class="task-list">
+                </div>
+              </section>
+              <section class="panel detail-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2 id="task-title">任务详情</h2>
+                    <p id="task-subtitle">选择任务后，查看目标、命令、执行过程和结果。</p>
+                  </div>
+                  <div class="actions">
+                    <button id="refresh-task" hidden>查询远端状态</button>
+                    <button id="cancel-task" class="danger" hidden>取消受管任务</button>
+                  </div>
+                </div>
+                <div id="task-detail" class="detail-content">
+                  <p class="empty">从左侧选择任务，执行步骤和日志会显示在这里。</p>
+                </div>
+              </section>
+            </div>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>最近活动</h2>
+                  <p>提交成功只代表已受理；长任务结果以远端查询为准。</p>
+                  <p id="activity-scope">
+                  </p>
+                </div>
+              </div>
+              <div class="activity-grid">
+                <div>
+                  <h3>命令与文件操作</h3>
+                  <div id="operations">
+                  </div>
+                </div>
+                <div>
+                  <h3>终端连接记录</h3>
+                  <div id="sessions">
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section class="panel logs-panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>任务输出</h2>
+                  <p id="log-description">从步骤、操作或会话中选择“查看日志”。</p>
+                </div>
+                <div class="actions">
+                  <label for="log-stream">输出流</label>
+                  <select id="log-stream">
+                    <option value="stdout">stdout</option>
+                    <option value="stderr">stderr</option>
+                  </select>
+                  <button id="load-log" disabled>读取下一页</button>
+                  <label class="checkbox">
+                    <input type="checkbox" id="follow-log">持续读取</label>
+                </div>
+              </div>
+              <p id="log-note" class="log-note">此处只读取日志。需要输入命令，请进入“终端调试”。</p>
+              <pre id="log-output" tabindex="0" aria-label="终端或任务日志">尚未选择输出。</pre>
+            </section>
+          </div>
+          <div data-page="sessions" hidden>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>打开远程终端</h2>
+                  <p>打开设备终端，或选择模板进入专用测试前台。同一时刻仅一方可以输入。</p>
+                </div>
+              </div>
+              <form id="session-open-form" class="editor-form">
+                <div class="form-grid">
+                  <label>连接设备<select id="session-target" required>
+                    </select>
+                  </label>
+                  <label>打开后进入<select id="session-profile">
+                      <option value="">普通终端</option>
+                    </select>
+                  </label>
+                  <label>初始命令（可选）<input id="session-command" spellcheck="false" placeholder="留空打开默认终端">
+                  </label>
+                </div>
+                <div class="actions">
+                  <button id="session-open-submit" type="submit">打开终端</button>
+                  <button id="session-open-retry" type="button" class="quiet" hidden>查询上次连接结果</button>
+                  <button id="session-open-forget" type="button" class="quiet" hidden>核对后结束本次请求</button>
+                </div>
+                <p id="session-open-error" class="inline-message" role="alert" hidden>
+                </p>
+              </form>
+            </section>
+            <div class="session-layout">
+              <section class="panel">
+                <div class="panel-heading">
+                  <h2>已有终端</h2>
+                  <button id="refresh-sessions" class="quiet">刷新</button>
+                </div>
+                <div id="session-list">
+                </div>
+              </section>
+              <section class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2 id="session-title">终端输出</h2>
+                    <p id="session-status">选择左侧终端，或在上方建立新连接。</p>
+                  </div>
+                  <span id="session-owner" class="badge">尚未选择</span>
+                </div>
+                <div class="editor-form">
+                  <div class="actions">
+                    <button id="session-claim" disabled>由我接管</button>
+                    <button id="session-release" class="quiet" disabled>归还给 Agent</button>
+                    <button id="session-interrupt" class="danger" disabled>中断 Ctrl+C</button>
+                    <button id="session-leave" class="quiet" disabled>退出测试前台</button>
+                    <button id="session-close" class="danger" disabled>关闭连接</button>
+                  </div>
+                  <p class="small">Ctrl+C 会发送终端中断；退出使用模板中的退出命令；关闭连接不保证结束远端进程。</p>
+                  <pre id="session-output" class="terminal-output" tabindex="0" aria-label="会话实时输出">尚未选择会话。</pre>
+                  <form id="session-input-form">
+                    <label for="session-input">输入命令</label>
+                    <textarea id="session-input" rows="3" disabled spellcheck="false" placeholder="接管后输入命令。发送仅表示输入已交给终端，业务结果请查看实际输出。">
+                    </textarea>
+                    <div class="actions">
+                      <label class="checkbox">
+                        <input type="checkbox" id="session-newline" checked>末尾回车</label>
+                      <label class="checkbox">
+                        <input type="checkbox" id="session-sensitive">敏感输入（隐藏输入值与已知回显）</label>
+                      <button id="session-send" type="submit" disabled>发送命令</button>
+                      <button id="session-retry" type="button" class="quiet" hidden>查询上次发送结果</button>
+                    </div>
+                  </form>
+                  <div class="actions terminal-size">
+                    <label>列<input id="session-cols" type="number" min="1" max="1000" value="100">
+                    </label>
+                    <label>行<input id="session-rows" type="number" min="1" max="1000" value="30">
+                    </label>
+                    <button id="session-resize" class="quiet" disabled>调整终端尺寸</button>
+                  </div>
+                  <p id="session-feedback" class="inline-message" role="status" hidden>
+                  </p>
+                </div>
+              </section>
+            </div>
+            <section class="panel profile-section">
+              <details>
+                <summary>
+                  <span>
+                    <strong>专用前台模板</strong>
+                    <small>需要进入测试软件、设备 CLI 等专用前台时配置；普通 SSH 终端不需要。</small>
+                  </span>
+                </summary>
+                <div class="panel-heading">
+                  <div>
+                    <h2>管理前台模板</h2>
+                    <p>为专用测试前台配置进入、提示符和退出规则。测试会真实打开会话并发送进入命令。</p>
+                  </div>
+                  <button id="add-profile">新建模板</button>
+                </div>
+                <div id="profile-list" class="target-grid">
+                </div>
+                <form id="profile-form" class="editor-form" hidden>
+                  <div class="form-grid">
+                    <label>模板名称<input id="profile-name" required>
+                    </label>
+                    <label>显示名称（可选）<input id="profile-label">
+                    </label>
+                    <label>进入命令<input id="profile-enter" spellcheck="false">
+                    </label>
+                    <label>前台提示符（正则）<input id="profile-prompt" spellcheck="false">
+                    </label>
+                    <label>退出命令<input id="profile-exit" spellcheck="false">
+                    </label>
+                    <label>退出后的提示符（正则）<input id="profile-exit-prompt" spellcheck="false">
+                    </label>
+                    <label>等待超时（秒）<input id="profile-timeout" type="number" min="1" max="60" value="15">
+                    </label>
+                  </div>
+                  <p id="profile-error" class="inline-message" role="alert" hidden>
+                  </p>
+                  <div class="actions">
+                    <button type="submit">检查并保存模板</button>
+                    <button id="close-profile" type="button" class="quiet">取消编辑</button>
+                  </div>
+                </form>
+              </details>
+            </section>
+          </div>
+          <div data-page="operations" hidden>
+            <div class="context-note">
+              <span aria-hidden="true">▷</span>
+              <p>将验证过的命令保存为常用操作，选择设备后即可运行。需要临时执行或复杂流程时，仍可直接告诉 Agent。</p>
+            </div>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>常用操作</h2>
+                  <p>保存反复执行的部署、测试或检查命令。运行前核对设备和实际命令，结果进入任务记录。</p>
+                </div>
+                <button id="add-template">新建操作</button>
+              </div>
+              <div id="template-list" class="target-grid">
+              </div>
+              <form id="template-form" class="editor-form" hidden>
+                <div class="form-grid">
+                  <label>操作名称<input id="template-name" required>
+                  </label>
+                  <label>执行方式<select id="template-kind">
+                      <option value="job">长任务：断线后仍可查询（需远端助手）</option>
+                      <option value="exec">短命令：在当前连接内执行</option>
+                    </select>
+                  </label>
+                  <label>说明<input id="template-description">
+                  </label>
+                  <label>远端工作目录（可选）<input id="template-cwd" spellcheck="false">
+                  </label>
+                  <label>超时（秒，可选）<input id="template-timeout" type="number" min="0" max="86400">
+                  </label>
+                </div>
+                <label>固定命令<textarea id="template-command" required rows="4" spellcheck="false">
+                  </textarea>
+                </label>
+                <p id="template-error" class="inline-message" role="alert" hidden>
+                </p>
+                <div class="actions">
+                  <button type="submit">检查并保存操作</button>
+                  <button id="close-template" type="button" class="quiet">取消编辑</button>
+                </div>
+              </form>
+            </section>
+          </div>
+          <div data-page="settings" hidden>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>配置与备份</h2>
+                  <p>更改配置时自动备份。导出包含设备和操作设置，密码值不包含在内。</p>
+                </div>
+                <div class="actions">
+                  <button id="export-config" class="quiet">导出配置</button>
+                  <button id="import-config" class="quiet">导入配置</button>
+                  <input id="import-file" type="file" accept=".json,application/json" hidden>
+                  <button id="list-backups" class="quiet">查看备份</button>
+                </div>
+              </div>
+              <div class="editor-form">
+                <details class="settings-details">
+                  <summary>本机数据位置与诊断</summary>
+                  <div id="local-diagnostics">
+                  </div>
+                </details>
+                <p id="settings-effective-note" class="advice" role="status" hidden>
+                </p>
+                <form id="settings-form">
+                  <div class="form-grid">
+                    <label>本地单条记录日志上限（MiB）<input id="settings-log-limit" type="number" min="0.004" step="any" max="1024" value="64">
+                    </label>
+                    <label>默认执行 / 交互等待（秒）<input id="settings-timeout" type="number" min="5" max="60" value="30">
+                    </label>
+                  </div>
+                  <p class="small">日志上限对后续输出生效。远端 Helper 日志容量由各设备配置控制；日志清理需要先预览。</p>
+                  <button type="submit">检查并保存设置</button>
+                  <p id="settings-error" class="inline-message" role="alert" hidden>
+                  </p>
+                </form>
+                <div id="backup-list">
+                </div>
+                <div id="config-result" class="action-result" role="status">
+                </div>
+              </div>
+            </section>
+            <section class="panel update-panel" aria-labelledby="update-title">
+              <div class="panel-heading">
+                <div>
+                  <h2 id="update-title">软件更新</h2>
+                  <p>主动检查新版。打开控制台不会访问 GitHub；离线安装保持离线更新。</p>
+                </div>
+                <div class="actions">
+                  <button id="check-update">检查新版</button>
+                  <button id="install-update" hidden>安装已检查的版本</button>
+                  <button id="rollback-update" class="quiet" hidden>回退上一版本</button>
+                </div>
+              </div>
+              <div class="update-content">
+                <p id="update-summary" role="status">正在读取本地安装状态…</p>
+                <div id="update-components" class="update-components">
+                </div>
+                <div id="update-plan">
+                </div>
+                <p class="small">更新保留配置与任务记录。远端 Helper 按兼容要求另行处理；回退不会回退数据库或远端部署。</p>
+                <details id="update-history">
+                  <summary>最近更新记录</summary>
+                  <div id="update-history-list">
+                  </div>
+                </details>
+              </div>
+            </section>
+            <section class="panel advanced-credentials">
+              <details>
+                <summary>
+                  <span>
+                    <strong>高级凭据管理</strong>
+                    <small>复用引用与自动登录时使用。普通密码直接在设备编辑页输入即可。</small>
+                  </span>
+                </summary>
+                <div class="panel-heading">
+                  <div>
+                    <h2>临时凭据</h2>
+                    <p>值仅保存在本地管理器内存；管理器重启后失效。浏览器不会保存密码或将其写入配置导出。</p>
+                  </div>
+                </div>
+                <div class="editor-form">
+                  <div id="credential-list">
+                  </div>
+                  <form id="credential-form">
+                    <div class="form-grid">
+                      <label>引用名称<input id="credential-name" required autocomplete="off" placeholder="例如 lab-password">
+                      </label>
+                      <label>凭据值<input id="credential-value" type="password" required autocomplete="new-password">
+                      </label>
+                    </div>
+                    <button type="submit">保存到管理器内存</button>
+                    <p id="credential-result" class="inline-message" role="status" hidden>
+                    </p>
+                  </form>
+                </div>
+              </details>
+            </section>
+          </div>
+        </main>
+        <footer>
+          <span>仅本机访问 · CLI、Agent 与控制台共享执行记录</span>
+          <span>remote-mng</span>
+        </footer>
       </div>
-      <div data-page="devices" hidden>
-        <section class="panel"><div class="panel-heading"><div><h2>设备管理</h2><p>保存只修改本地配置；测试连接、安装 Helper 都由你明确发起。</p></div><div class="actions"><button id="add-device">添加设备</button><button id="refresh-admin" class="quiet">刷新配置</button></div></div><div id="device-list" class="target-grid"></div></section>
-        <section id="device-editor-panel" class="panel" hidden><div class="panel-heading"><div><h2 id="device-editor-title">添加设备</h2><p>先保存，再测试连接。修改会显示差异，并检查配置版本冲突。</p></div><button id="close-device-editor" class="quiet">收起</button></div><form id="device-form" class="editor-form">
-          <div class="form-grid"><label>设备名称<input id="device-name" required maxlength="80" placeholder="例如 lab-board"></label><label>连接协议<select id="device-protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option></select></label><label>地址<input id="device-host" required placeholder="主机名或 IP"></label><label>端口<input id="device-port" type="number" min="1" max="65535" placeholder="SSH 22 / Telnet 23"></label><label>用户名<input id="device-username" autocomplete="username"></label><label>认证方式<select id="device-auth"><option value="agent">SSH Agent / 系统默认密钥</option><option value="key">指定私钥文件</option><option value="memory">本机临时凭据引用</option><option value="environment">管理器环境变量引用</option></select></label></div>
-          <div class="form-grid"><label id="device-keys-field" hidden>私钥路径（每行一个）<textarea id="device-keys" rows="2" spellcheck="false" placeholder="例如 C:\Users\you\.ssh\id_ed25519"></textarea></label><label id="device-credential-field" hidden>密码引用<input id="device-credential" spellcheck="false" placeholder="在设置中添加临时凭据"></label><label>私钥口令临时引用（可选）<input id="device-passphrase" spellcheck="false"></label></div><p id="device-auth-advice" class="small">凭据不写入配置。临时凭据在设置中管理，管理器重启后失效。</p>
-          <div id="telnet-login-fields" hidden><div class="form-grid"><label>Telnet 登录流程<select id="telnet-login-mode"><option value="none">仅连接，不自动输入</option><option value="user-password">用户名与密码</option><option value="password">仅密码</option><option value="advanced">使用高级 JSON 登录流程</option></select></label><label>用户名提示符（正则）<input id="telnet-user-prompt" value="(?i)(login|username):\s*$" spellcheck="false"></label><label>密码提示符（正则）<input id="telnet-password-prompt" value="(?i)password:\s*$" spellcheck="false"></label></div><p class="small">用户名从上方字段读取；密码从临时凭据或环境变量引用读取。提示符采用 Python 正则表达式。</p></div><details><summary>高级连接与传包配置</summary><div class="form-grid"><label>终端编码<input id="device-encoding" value="utf-8"></label><label>连接超时（秒）<input id="device-timeout" type="number" min="1" max="300" value="15"></label><label>远端 Shell<select id="device-shell"><option value="posix">POSIX shell</option><option value="unknown">未知 / 专用前台</option></select></label><label>Helper 目录<input id="device-helper" value="~/.local/share/remote-mng"></label><label>独立 SSH 传包地址（可选）<input id="device-transfer-host" placeholder="Telnet 设备可单独配置"></label><label>传包用户名<input id="device-transfer-user"></label><label>传包端口<input id="device-transfer-port" type="number" min="1" max="65535" placeholder="22"></label><label>传包密码临时引用<input id="device-transfer-ref" spellcheck="false"></label></div><label>高级字段 JSON（跳板 jump、代理 proxy、登录 login_steps/login_flow 等）<textarea id="device-advanced" rows="6" spellcheck="false">{}</textarea></label><p class="small">保留未修改的高级字段。登录密码请使用 send_ref 或 send_env，不要直接写入 send。</p></details>
-          <p id="device-error" class="inline-message" role="alert" hidden></p><div class="actions"><button type="submit">预览并保存配置</button><button id="reset-device" type="button" class="quiet">放弃编辑</button></div>
-        </form></section>
-        <section class="panel"><div class="panel-heading"><div><h2>连接诊断与 Helper</h2><p>主机指纹需与可信来源核对。Helper 操作会影响所选远端设备。</p></div></div><div class="editor-form"><div class="actions"><label for="manage-target">设备</label><select id="manage-target"></select><button id="diagnose-target">测试连接</button><select id="hostkey-endpoint" aria-label="主机身份端点"><option value="target">目标 SSH</option><option value="jump">跳板 SSH</option><option value="transfer">传包 SSH</option><option value="transfer.jump">传包跳板 SSH</option></select><button id="probe-hostkey" class="quiet">读取主机指纹</button><button id="helper-health" class="quiet">Helper 存储检查</button><button id="helper-install" class="quiet">安装 / 更新 Helper</button><button id="helper-cleanup" class="quiet">预览 Helper 日志清理</button></div><label class="helper-cleanup-ids">需要清理日志的原作业 ID（每行一个，仅清理明确选择的作业）<textarea id="helper-job-ids" rows="2" spellcheck="false" placeholder="从任务步骤的 job_id 复制；任务详情也可直接预览清理"></textarea></label><div id="device-action-result" class="action-result" role="status"></div></div></section>
+    </div>
+    <dialog id="change-dialog" aria-labelledby="change-title">
+      <div class="dialog-heading">
+        <h2 id="change-title">确认配置变更</h2>
+        <button id="change-cancel" class="quiet" aria-label="关闭预览">关闭</button>
       </div>
-      <div data-page="tasks" hidden>
-      <div class="work-grid">
-        <section class="panel task-panel"><div class="panel-heading"><div><h2>任务</h2><p id="task-list-scope">选择任务，查看步骤与恢复依据。</p></div><button id="refresh-overview" class="quiet">刷新列表</button></div><div id="tasks" class="task-list"></div></section>
-        <section class="panel detail-panel"><div class="panel-heading"><div><h2 id="task-title">任务详情</h2><p id="task-subtitle">任务 ID 会跨 Agent 会话保留。</p></div><div class="actions"><button id="refresh-task" hidden>查询远端状态</button><button id="cancel-task" class="danger" hidden>取消受管任务</button></div></div><div id="task-detail" class="detail-content"><p class="empty">选择左侧任务查看执行时间线。</p></div></section>
+      <p id="change-description">
+      </p>
+      <div id="change-summary" class="change-summary">
       </div>
-      <section class="panel"><div class="panel-heading"><div><h2>活动记录</h2><p>提交成功只代表已受理；长任务结果以远端查询为准。</p><p id="activity-scope"></p></div></div><div class="activity-grid"><div><h3>操作记录</h3><div id="operations"></div></div><div><h3>终端会话记录</h3><div id="sessions"></div></div></div></section>
-      <section class="panel logs-panel"><div class="panel-heading"><div><h2>输出观察</h2><p id="log-description">从步骤、操作或会话中选择“查看日志”。</p></div><div class="actions"><label for="log-stream">输出流</label><select id="log-stream"><option value="stdout">stdout</option><option value="stderr">stderr</option></select><button id="load-log" disabled>读取下一页</button><label class="checkbox"><input type="checkbox" id="follow-log">持续读取</label></div></div><p id="log-note" class="log-note">日志只用于观察，不会向终端发送输入。</p><pre id="log-output" tabindex="0" aria-label="终端或任务日志">尚未选择输出。</pre></section>
+      <details class="change-technical">
+        <summary>技术详情</summary>
+        <pre id="change-preview" tabindex="0">
+        </pre>
+      </details>
+      <p id="change-error" class="inline-message" role="alert" hidden>
+      </p>
+      <div class="actions">
+        <button id="change-apply">确认应用</button>
+        <button id="change-dismiss" class="quiet">返回修改</button>
       </div>
-      <div data-page="sessions" hidden>
-        <section class="panel"><div class="panel-heading"><div><h2>交互会话</h2><p>观察输出不会抢占控制权。接管后 Agent 需等你明确归还，再获取控制权。</p></div></div><form id="session-open-form" class="editor-form"><div class="form-grid"><label>目标设备<select id="session-target" required></select></label><label>交互模板<select id="session-profile"><option value="">普通终端</option></select></label><label>初始命令（可选）<input id="session-command" spellcheck="false" placeholder="留空打开默认终端"></label></div><div class="actions"><button id="session-open-submit" type="submit">新建会话并由我控制</button><button id="session-open-retry" type="button" class="quiet" hidden>查询 / 重取上次创建结果</button><button id="session-open-forget" type="button" class="quiet" hidden>核对后结束本次请求</button></div><p id="session-open-error" class="inline-message" role="alert" hidden></p></form></section>
-        <div class="session-layout"><section class="panel"><div class="panel-heading"><h2>会话列表</h2><button id="refresh-sessions" class="quiet">刷新</button></div><div id="session-list"></div></section><section class="panel"><div class="panel-heading"><div><h2 id="session-title">会话详情</h2><p id="session-status">选择一个会话查看输出。</p></div><span id="session-owner" class="badge">尚未选择</span></div><div class="editor-form"><div class="actions"><button id="session-claim" disabled>接管输入</button><button id="session-release" class="quiet" disabled>归还控制权</button><button id="session-interrupt" class="danger" disabled>发送 Ctrl+C</button><button id="session-leave" class="quiet" disabled>退出交互前台</button><button id="session-close" class="danger" disabled>关闭连接</button></div><p class="small">Ctrl+C 会发送终端中断；退出使用模板中的退出命令；关闭连接不保证结束远端进程。</p><pre id="session-output" class="terminal-output" tabindex="0" aria-label="会话实时输出">尚未选择会话。</pre><form id="session-input-form"><label for="session-input">发送到当前会话</label><textarea id="session-input" rows="3" disabled spellcheck="false" placeholder="接管后输入命令。发送仅表示输入已交给终端，业务结果请查看实际输出。"></textarea><div class="actions"><label class="checkbox"><input type="checkbox" id="session-newline" checked>末尾回车</label><label class="checkbox"><input type="checkbox" id="session-sensitive">敏感输入（隐藏输入值与已知回显）</label><button id="session-send" type="submit" disabled>发送一次</button><button id="session-retry" type="button" class="quiet" hidden>查询 / 重取上次发送结果</button></div></form><div class="actions terminal-size"><label>列<input id="session-cols" type="number" min="1" max="1000" value="100"></label><label>行<input id="session-rows" type="number" min="1" max="1000" value="30"></label><button id="session-resize" class="quiet" disabled>调整终端尺寸</button></div><p id="session-feedback" class="inline-message" role="status" hidden></p></div></section></div>
-      </div>
-      <div data-page="settings" hidden>
-        <section class="panel"><div class="panel-heading"><div><h2>交互模板</h2><p>为专用测试前台配置进入、提示符和退出规则。测试会真实打开会话并发送进入命令。</p></div><button id="add-profile">新建模板</button></div><div id="profile-list" class="target-grid"></div><form id="profile-form" class="editor-form" hidden><div class="form-grid"><label>模板名称<input id="profile-name" required></label><label>显示名称（可选）<input id="profile-label"></label><label>进入命令<input id="profile-enter" spellcheck="false"></label><label>前台提示符（正则）<input id="profile-prompt" spellcheck="false"></label><label>退出命令<input id="profile-exit" spellcheck="false"></label><label>退出后的提示符（正则）<input id="profile-exit-prompt" spellcheck="false"></label><label>等待超时（秒）<input id="profile-timeout" type="number" min="1" max="60" value="15"></label></div><p id="profile-error" class="inline-message" role="alert" hidden></p><div class="actions"><button type="submit">预览并保存模板</button><button id="close-profile" type="button" class="quiet">取消编辑</button></div></form></section>
-        <section class="panel"><div class="panel-heading"><div><h2>常用操作</h2><p>保存经过确认的固定命令。运行前展示目标与命令，执行结果统一进入任务记录。</p></div><button id="add-template">新建操作</button></div><div id="template-list" class="target-grid"></div><form id="template-form" class="editor-form" hidden><div class="form-grid"><label>操作名称<input id="template-name" required></label><label>执行方式<select id="template-kind"><option value="job">持久作业（需 Helper，断线后可查询）</option><option value="exec">短命令（连接中执行）</option></select></label><label>说明<input id="template-description"></label><label>远端工作目录（可选）<input id="template-cwd" spellcheck="false"></label><label>超时（秒，可选）<input id="template-timeout" type="number" min="0" max="86400"></label></div><label>固定命令<textarea id="template-command" required rows="4" spellcheck="false"></textarea></label><p id="template-error" class="inline-message" role="alert" hidden></p><div class="actions"><button type="submit">预览并保存操作</button><button id="close-template" type="button" class="quiet">取消编辑</button></div></form></section>
-        <section class="panel"><div class="panel-heading"><div><h2>临时凭据</h2><p>值仅保存在本地管理器内存；管理器重启后失效。浏览器不会保存密码或将其写入配置导出。</p></div></div><div class="editor-form"><div id="credential-list"></div><form id="credential-form"><div class="form-grid"><label>引用名称<input id="credential-name" required autocomplete="off" placeholder="例如 lab-password"></label><label>凭据值<input id="credential-value" type="password" required autocomplete="new-password"></label></div><button type="submit">保存到管理器内存</button><p id="credential-result" class="inline-message" role="status" hidden></p></form></div></section>
-        <section class="panel"><div class="panel-heading"><div><h2>配置、诊断与备份</h2><p>导出只包含配置与凭据引用。导入和恢复先预览差异；已有任务不会重新执行。</p></div><div class="actions"><button id="export-config" class="quiet">导出配置</button><button id="import-config" class="quiet">导入配置</button><input id="import-file" type="file" accept=".json,application/json" hidden><button id="list-backups" class="quiet">查看备份</button></div></div><div class="editor-form"><div id="local-diagnostics"></div><p id="settings-effective-note" class="advice" role="status" hidden></p><form id="settings-form"><div class="form-grid"><label>本地单条记录日志上限（MiB）<input id="settings-log-limit" type="number" min="0.004" step="any" max="1024" value="64"></label><label>默认执行 / 交互等待（秒）<input id="settings-timeout" type="number" min="5" max="60" value="30"></label></div><p class="small">日志上限对后续输出生效。远端 Helper 日志容量由各设备配置控制；日志清理需要先预览。</p><button type="submit">预览并保存设置</button><p id="settings-error" class="inline-message" role="alert" hidden></p></form><div id="backup-list"></div><div id="config-result" class="action-result" role="status"></div></div></section>
-        <section class="panel update-panel" aria-labelledby="update-title"><div class="panel-heading"><div><h2 id="update-title">工具更新</h2><p>按需检查发布版本；页面刷新只读取本地状态，不会连接 GitHub 或远端设备。</p></div><div class="actions"><button id="check-update">检查新版</button><button id="install-update" hidden>安装已检查的版本</button><button id="rollback-update" class="quiet" hidden>回退上一版本</button></div></div><div class="update-content"><p id="update-summary" role="status">正在读取本地安装状态…</p><div id="update-components" class="update-components"></div><div id="update-plan"></div><p class="small">更新保留配置与任务记录。远端 Helper 按兼容要求另行处理；回退不会回退数据库或远端部署。</p><details id="update-history"><summary>最近更新记录</summary><div id="update-history-list"></div></details></div></section>
-      </div>
-    </main>
-    <footer><span>仅本机访问 · CLI 与控制台共享实际执行记录</span><span>remote-mng</span></footer>
-  </div>
-  <dialog id="change-dialog" aria-labelledby="change-title"><div class="dialog-heading"><h2 id="change-title">预览配置变更</h2><button id="change-cancel" class="quiet" aria-label="关闭预览">关闭</button></div><p id="change-description"></p><pre id="change-preview" tabindex="0"></pre><p id="change-error" class="inline-message" role="alert" hidden></p><div class="actions"><button id="change-apply">确认应用</button><button id="change-dismiss" class="quiet">取消</button></div></dialog>
-</body>
+    </dialog>
+  </body>
 </html>

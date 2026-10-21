@@ -12,7 +12,7 @@
 
 ## 推荐：运行新版离线安装包
 
-**[0.7.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.7.0) 提供单文件离线安装器和开发者管理控制台。** 下载适合本机系统的新版安装包，按公司要求带入内网后运行：Windows 双击 `...-setup.exe`，Linux/WSL 运行已赋予执行权限的 `...-setup.run`。无需为更新临时连接外网、安装 Python 环境或单独复制 Skill。
+**[0.8.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.8.0) 提供单文件离线安装器和重新设计的开发者控制台。** 从 [安装指南](distribution.md#推荐下载一个离线安装包) 下载适合本机系统的新版安装包，按公司要求带入内网后运行：Windows 双击 `...-setup.exe`，Linux/WSL 运行已赋予执行权限的 `...-setup.run`。无需为更新临时连接外网、安装 Python 环境或单独复制 Skill。
 
 安装器从自身读取程序和依赖，检查已有安装与活动，切换版本、同步 Skill 并验证管理器，保留任务、远端 job ID 和个人 `USER.md`。运行同一旧安装包只会核对它自带的版本，**不会获取新版**；必须带入新安装包才能离线升级。只在最后验证成功后报告完成，不能把解包、提交或排队当作安装成功。
 

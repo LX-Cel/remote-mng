@@ -1,6 +1,6 @@
 # 安装与手动更新
 
-**[0.7.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.7.0) 提供单文件离线安装器和开发者管理控制台。** 下载对应系统的一个文件后，可直接带入内网安装和更新；联网脚本与历史包维护保留在高级说明中。
+**[0.8.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.8.0) 提供单文件离线安装器和重新设计的开发者控制台。** 下载对应系统的一个文件后，可直接带入内网安装和更新；联网脚本与历史包维护保留在高级说明中。
 
 ## 推荐：下载一个离线安装包
 
@@ -8,14 +8,14 @@
 
 | 本机系统 | 离线安装包 | 运行方式 |
 | --- | --- | --- |
-| Windows x86_64 | [remote-mng-0.7.0-windows-x86_64-setup.exe](https://github.com/LX-Cel/remote-mng/releases/download/v0.7.0/remote-mng-0.7.0-windows-x86_64-setup.exe) | 双击 |
-| Linux / WSL x86_64 | [remote-mng-0.7.0-linux-x86_64-setup.run](https://github.com/LX-Cel/remote-mng/releases/download/v0.7.0/remote-mng-0.7.0-linux-x86_64-setup.run) | 在当前环境中赋予执行权限后运行 |
+| Windows x86_64 | [remote-mng-0.8.0-windows-x86_64-setup.exe](https://github.com/LX-Cel/remote-mng/releases/download/v0.8.0/remote-mng-0.8.0-windows-x86_64-setup.exe) | 双击 |
+| Linux / WSL x86_64 | [remote-mng-0.8.0-linux-x86_64-setup.run](https://github.com/LX-Cel/remote-mng/releases/download/v0.8.0/remote-mng-0.8.0-linux-x86_64-setup.run) | 在当前环境中赋予执行权限后运行 |
 
 Linux / WSL：
 
 ```sh
-chmod +x ./remote-mng-0.7.0-linux-x86_64-setup.run
-./remote-mng-0.7.0-linux-x86_64-setup.run
+chmod +x ./remote-mng-0.8.0-linux-x86_64-setup.run
+./remote-mng-0.8.0-linux-x86_64-setup.run
 ```
 
 `.run` 是包含运行时的原生可执行文件，不是需要下载依赖的 Shell 脚本。安装器检查内含文件，安装到个人目录、同步 Skill 并启动管理器；默认不需要管理员权限，不改全局 PATH。只有最终验证通过才报告成功。
