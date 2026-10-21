@@ -6,7 +6,7 @@ remote-mng 随工具一起分发个人 Skill。开发者向 Claude Code 终端�
 
 推荐从 [README 的 Windows 或 Linux/WSL 入口](../README.md#一次安装之后用自然语言)安装：下载脚本后运行一次，程序与 Skill 一起安装并启动管理器。手动更新重跑同一脚本，日常直接告诉 Claude“更新 remote-mng”。
 
-新简易入口随 **0.5.0** 制品发行后可用；当前分支是实现候选，尚未发布。当前可下载的 0.4.0 旧流程及离线安装见 [高级安装指南](distribution.md#已发布的-040-和离线安装)。公开仓库无需 GitHub 登录；Python、uv 和源码维护仅是高级备选，不是新用户的必需步骤。
+**[0.5.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0)** 已提供简易入口，自动安装程序和 Skill。公开仓库无需 GitHub 登录；Python、uv 和源码维护仅是高级备选。0.4 旧流程及离线安装见 [高级安装指南](distribution.md#已发布的-040-和离线安装)。
 
 Windows 原生、WSL 和 Linux 各自安装，工具路径、认证环境和状态目录不混用。Windows 原生 Claude Code 需要 Git Bash。部分 Windows 宿主限制独立后台进程，安装和更新会据实际结果给出阻碍；不能通过已预启动管理器推断后续更新也一定成功，不能借计划任务或其他宿主绕过限制。
 
@@ -46,9 +46,9 @@ Skill 入口只封装本地启动，不另建一套远程连接。CLI、本地�
 
 ## 升级旧版本
 
-已安装 0.4 及之后版本时，优先直接告诉 Claude“更新 remote-mng”；0.5 新入口发行后，也可重新运行原安装脚本。工具保留任务与原 job ID，并处理受支持安装的管理器停启和 Skill 更新。Agent 保存安装通道，预览用户不需要每次追加预览参数。完整状态、恢复及实际限制见 [更新指南](updates.md)。
+日常优先直接告诉 Claude“更新 remote-mng”；手动更新时重新运行原安装脚本。旧 0.4 默认只检查正式发布，进入 0.5 预览可先重跑新脚本。工具保留任务与原 job ID，并处理受支持安装的管理器停启和 Skill 更新；0.5 保存安装通道，预览用户后续不需要每次追加参数。完整状态、恢复及实际限制见 [更新指南](updates.md)。
 
-0.3 没有 `update`，运行中的旧管理器也缺少新版维护预留协议。新入口会报告阻碍并保留它，让 Agent 核对活动，在你确认普通前台可以断开后处理；不能为完成升级强停业务会话。受支持 uv 安装的快照迁移正在纳入 0.5 候选，具体以该版本实际验收为准。旧版本的历史证据保留在 [0.4 验收记录](v04-validation.md)。
+0.3 没有 `update`，运行中的旧管理器也缺少新版维护预留协议。新入口会报告阻碍并保留它，让 Agent 核对活动，在你确认普通前台可以断开后处理；不能为完成升级强停业务会话。受支持的 0.4 uv 安装到 0.5 已通过两平台真实前台升级，见 [0.5 验收记录](v05-validation.md)；旧版本的历史证据保留在 [0.4 验收记录](v04-validation.md)。
 
 ## 源码手工维护
 
@@ -110,4 +110,4 @@ rmg skill status --claude-dir /path/to/claude-config --json
 
 原始资源位于 `src/remote_mng/assets/claude_skill/remote-mng/`。手工复制原始目录时，源包装脚本调用 PATH 中的 `rmg`，因此必须确保 Claude 能找到工具。安装器生成的版本绑定本机 Python 路径或独立包稳定入口，不适合直接复制到另一台机器；换机器后在当地重新安装。
 
-历史 [0.4.0 为预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，使用当时的固定版本安装流程；其默认查新只选择正式发布。0.5 候选加入持久更新通道与简易入口，不将该版历史验收视为新版已发布或已验收。实现、实际 CI 结果、制品来源与支持边界见 [0.4 验收记录](v04-validation.md)。[0.3 验证](v03-validation.md)、[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 是各自版本的历史验收，不代表新版功能已经按同一条件全部验证。
+当前 [0.5.0 为预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0)，提供统一安装入口与持久更新通道；实际 CI、制品来源和平台边界见 [0.5 验收记录](v05-validation.md)。[0.4 历史记录](v04-validation.md)、[0.3 验证](v03-validation.md)、[0.2 验证](v02-validation.md) 与 [0.1 Skill 实测](claude-skill-validation.md) 分别记录当时范围，不能替代本版验收。

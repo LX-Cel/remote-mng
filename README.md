@@ -6,7 +6,7 @@
 
 工具随包提供 Claude Code Skill，主入口是 `rmg` CLI。Skill 告诉 Agent 如何检查条件、记录步骤、保存任务 ID，以及如何处理断线和结果不明。MCP 保留为可选适配层，默认使用不需要配置 MCP。remote-mng 本身不内置模型，也不替代项目的构建脚本和业务验证规则。
 
-仓库已公开。当前可下载的是 **[v0.4.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)**；本分支正在实现 **0.5.0 简易安装与更新**，尚未发布。下方的新入口随 0.5.0 制品发行后可用；当前 0.4.0 安装方法保留在 [高级安装指南](docs/distribution.md#已发布的-040-和离线安装)。0.4 的 Linux 完整更新/回退通过，受限 Windows 宿主仅通过安全阻碍验收，具体见 [历史验收记录](docs/v04-validation.md)。
+仓库已公开，当前提供 **[v0.5.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0)**，支持下面的统一安装与更新入口。Windows 和 Linux 的真实首装、重复运行及官方 0.4 升级已通过；部分 Windows 宿主仍限制后台独立进程，具体来源、验收和边界见 [0.5 验收记录](docs/v05-validation.md)。
 
 ## 它解决什么问题
 
@@ -24,7 +24,7 @@
 
 ## 一次安装，之后用自然语言
 
-**0.5.0 发行后，只需按本机系统选择下面一种方式。** 在普通系统终端中下载脚本，查看内容后运行；脚本选择适合的平台包、验证摘要、安装程序和 Skill，并启动本地管理器。无需安装 Python、uv 或 GitHub CLI，也无需自己选择 ZIP 和填写摘要。当前预览期会自动提示并选择支持新入口的预览版。
+**只需按本机系统选择下面一种方式。** 在普通系统终端中下载脚本，查看内容后运行；脚本选择适合的平台包、验证摘要、安装程序和 Skill，并启动本地管理器。无需安装 Python、uv 或 GitHub CLI，也无需自己选择 ZIP 和填写摘要。当前预览期会自动提示并选择支持新入口的预览版。
 
 ### Windows PowerShell
 
@@ -104,7 +104,7 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 
 手动更新时，重新运行上面的安装脚本即可。活动前台、正在执行的操作、Skill 本地修改或兼容性不明会阻止切换；脚本不为了更新强行关闭它们。0.3 等旧版缺少安全更新协议，正在运行的旧管理器会明确阻碍迁移，先让 Agent 核对活动和作业 ID，在你允许普通前台断开后处理。详情见 [旧版迁移与恢复](docs/updates.md)。
 
-独立安装保留兼容版本供回退；受支持的 uv 安装在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。0.5 的迁移与简易入口仍需按该版本的实际发行验收确认，不能用 0.4 的历史结果代替。
+独立安装保留兼容版本供回退；受支持的 uv 安装在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。各平台实际验证范围见 [0.5 验收记录](docs/v05-validation.md)。
 
 个人部署规范可以保存在 `~/.claude/remote-mng/USER.md`，自定义 Claude 配置目录时跟随该目录。安装、升级和卸载都不修改这个文件；不要直接修改托管的 `skills/remote-mng` 目录。已存在的用户修改会被保护并报告冲突，不能靠强制覆盖跳过。
 
@@ -127,7 +127,7 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 | 操作交互前台和同一 Shell | [Agent 操作约定](docs/agent-guide.md) · [Shell 命令](docs/shell-v03.md) |
 | 管理远端长任务、日志和空间 | [helper 存储与维护](docs/helper-storage-v03.md) |
 | 查看更新状态、回退和失败恢复 | [更新指南](docs/updates.md) |
-| 了解原理和已验证边界 | [0.4 本地验证快照](docs/v04-validation.md) · [交互原理演示](docs/explainer-v02.html) · [0.3 验证记录](docs/v03-validation.md) |
+| 了解原理和已验证边界 | [0.5 验收记录](docs/v05-validation.md) · [交互原理演示](docs/explainer-v02.html) · [0.4 历史记录](docs/v04-validation.md) |
 
 版本命名的历史文档记录当时的范围，不代表新版验证已完成。Agent 的完整参数可从 `rmg schema --json` 和各命令的 `--help` 获取；`python -m remote_mng` 与 `rmg` 使用同一入口。
 
@@ -150,7 +150,7 @@ uv run --frozen python scripts/build_release.py
 uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json
 ```
 
-[发布流水线](.github/workflows/release.yml) 在 Windows 和 Ubuntu 22.04 上执行测试、构建及实际制品验证，核对上一正式版的升级/回退，并运行真实 uv 环境到独立更新器的交接与离线回退。源码前驱夹具使用当前实现加测试版本号，不冒充历史正式版。默认 CI 要求完整更新成功；受限宿主的 `passed_blocked_safely` 专项诊断不能替代正式发布门槛。0.4.0 的 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/34837889845) 全部通过，[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053) 的 Linux 通过、Windows 未通过，因此该版本以明确标注限制的预发布形式提供试用；这不是 0.5.0 已发布或验收通过的声明。
+[发布流水线](.github/workflows/release.yml) 验证真实旧版的分发升级/回退、首装与重复安装，以及独立更新进程和 uv 离线恢复。0.5 的 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/39552197928) 全部通过；[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/39552210533) 的 Linux 全部通过，Windows 受宿主进程限制等条件未通过。预发布的 Windows 包来自同源码的本机构建并通过真实安装、升级及分发回退，未使用失败的 Windows CI 包；后台更新限制仍明确保留，详见 [验收与来源](docs/v05-validation.md)。正式自动发布门槛未放宽，安全阻碍不算升级成功。
 
 ## 许可证
 

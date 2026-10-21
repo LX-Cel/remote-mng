@@ -290,3 +290,44 @@ try {{
     assert process.returncode == 0, process.stdout + process.stderr
     assert expected in process.stdout
     assert "UNEXPECTED_SUCCESS" not in process.stdout
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_real_rest_method_array_output_is_unwrapped_before_release_selection(tmp_path, shell, preview):
+    """Model the cmdlet's NoEnumerate array contract, not a scalar JSON mock.
+
+    Windows PowerShell and pwsh both emit a REST JSON array as one object. A
+    direct `return Invoke-RestMethod` leaks that wrapper through Get-RmgJson.
+    """
+    data = tmp_path / "rest-array.json"
+    fixture = {"latest": release("0.3.0"), "releases": [release("0.5.0", preview=True),
+                                                         release("0.4.0", preview=True), release("0.3.0")]}
+    data.write_text(json.dumps(fixture), encoding="utf-8-sig")
+    harness = tmp_path / "rest-array.ps1"
+    harness.write_text(f"""$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+. {ps(INSTALLER)}
+$script:api = [IO.File]::ReadAllText({ps(data)}) | ConvertFrom-Json
+function Invoke-RestMethod {{
+    param([string]$Uri, $Headers, [int]$TimeoutSec)
+    if ($Uri.EndsWith('/latest')) {{ return $script:api.latest }}
+    Write-Output -NoEnumerate @($script:api.releases)
+}}
+try {{
+    $items = @(Get-RmgJson 'https://api.github.com/repos/LX-Cel/remote-mng/releases?per_page=100&page=1')
+    $selected = Get-RmgRelease -Repository 'LX-Cel/remote-mng' {'-Preview' if preview else ''}
+    $result = @{{ ok = $true; count = $items.Count; tag = $selected.tag_name; preview = $selected.prerelease }}
+}} catch {{
+    $result = @{{ ok = $false; message = $_.Exception.Message }}
+}}
+Write-Output ('RESULT_JSON=' + ($result | ConvertTo-Json -Depth 5 -Compress))
+""", encoding="utf-8-sig")
+    process = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+    assert process.returncode == 0, process.stdout + process.stderr
+    lines = [line for line in process.stdout.splitlines() if line.startswith("RESULT_JSON=")]
+    assert len(lines) == 1, process.stdout + process.stderr
+    outcome = json.loads(lines[0].removeprefix("RESULT_JSON="))
+    assert outcome["ok"], outcome
+    assert outcome["count"] == 3
+    assert outcome["tag"] == "v0.5.0" and outcome["preview"] is True

@@ -1,6 +1,6 @@
 # 安装与手动更新
 
-**本页的简易入口是 0.5.0 实现候选，随 0.5.0 制品发行后可用；尚未发布。** 当前最新正式版为 0.3.0，最新预发布为 [0.4.0](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)，这两个旧制品尚无新入口所需的 bootstrap 命令。脚本遇到旧制品会说明原因并保留本地安装，不会为了安装强停旧管理器。[现有 0.4.0 安装](#已发布的-040-和离线安装)保留在下方高级说明。
+**[0.5.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0) 已支持下面的简易入口。** 当前尚无兼容正式版，默认脚本会明确提示并选择兼容预览。旧 0.3/0.4 制品没有 bootstrap 命令，新入口不会误选它们；[0.4 旧流程和离线安装](#已发布的-040-和离线安装)保留在下方高级说明。
 
 ## 一次安装，之后重跑同一个入口
 
@@ -113,7 +113,7 @@ uv tool install .
 rmg setup --start-daemon
 ```
 
-普通 uv tool 安装可使用统一更新，开发环境与日常工具环境分别维护。0.5 候选 bootstrap 正在加入从受支持 uv 安装保存原环境快照并安全更新的路径；其实际支持范围须以 0.5 发布验收为准，不把 0.4 历史结果当作该迁移已通过。可编辑源码、未知 pip、自定义环境或无法核验的文件会明确阻碍，不自动覆盖。
+普通 uv tool 安装可使用统一更新，开发环境与日常工具环境分别维护。0.5 的 bootstrap 会先为受支持的 uv 安装保存原环境快照，再进行更新；Windows、WSL 的官方 0.4 wheel 到 0.5 已通过真实验证并保留原 uv 目录。可编辑源码、未知 pip、自定义环境或无法核验的文件会明确阻碍，不自动覆盖；范围见 [0.5 验收记录](v05-validation.md)。
 
 从源码分支手工维护时，Git 更新源码不等于已更新工具环境或 Skill。多命令维护流程仅适合明确选择源码的开发者，见 [Skill 与旧版维护](claude-skill.md#源码手工维护)。
 
@@ -133,7 +133,7 @@ uv run --frozen python scripts/smoke_release.py --build-result dist/release/buil
 
 smoke 的 Python 充当测试服务器与断言工具；被测 CLI、后台 daemon、Skill 绑定来自独立包，使用隔离安装和状态目录。分发层覆盖含中文、空格与单引号的路径、SSH 返回码、SFTP、Telnet 去重和兼容回退；Linux 还运行真实 detached helper 作业并核对副作用恰好一次。worker 层另验证真实更新进程、管理器停启、进度页和离线回退，GitHub 传输使用固定本地资产夹具，不替换安装器或管理器。边界与实际结果见 [0.4 验收记录](v04-validation.md)。
 
-`.github/workflows/release.yml` 配置在 Windows 和 Ubuntu 22.04 构建，默认要求真实前驱的分发升级、worker 更新和 uv 更新／回退全部通过。手动工作流仅保存 Actions artifacts，tag 推送在两平台成功后创建正式 release，并附带安装脚本及摘要；仓库现已公开。[0.4.0 历史发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/34837898053) 的 Linux 全部通过、Windows 未通过，正式自动发布未执行；当前提供的是明确标注限制的 [v0.4.0 预发布](https://github.com/LX-Cel/remote-mng/releases/tag/v0.4.0)。Linux 包来自通过验收的 CI，Windows 包来自同提交的干净本机构建及已记录的分发/保护验收，不是失败的 Windows CI 制品。完整来源与摘要见 [验收记录](v04-validation.md)。
+`.github/workflows/release.yml` 默认要求两平台的真实前驱分发升级、前台安装、worker 更新和 uv 更新／回退全部通过；手动工作流保存制品，tag 工作流在全部成功后正式发布。0.5 的 Linux 发行验收通过，Windows 仍受宿主进程创建等条件限制，正式自动发布未执行。当前 [v0.5.0 预发布](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0) 使用通过验收的 Ubuntu 22.04 包和经过完整本地安装、升级及分发回退的 Windows 包，未使用失败的 Windows CI 制品。完整来源与摘要见 [0.5 验收记录](v05-validation.md)。
 
 0.4.0 本地 Windows 分发层验收通过；当前 Codex 宿主中的 worker 自动更新受到嵌套 Job Object 限制，已验证会提前报告阻碍并保留原状态，结果标记为 `passed_blocked_safely`，不能称为自动更新成功。发布 CI 不使用这个诊断模式替代完整成功条件。普通终端也须经过实际检查，预启动不能保证后续更新进程具有相同权限。
 

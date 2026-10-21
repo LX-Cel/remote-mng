@@ -36,11 +36,14 @@ function Get-RmgProperty {
 function Get-RmgJson {
     param([string]$Uri, [switch]$AllowNotFound)
     try {
-        return Invoke-RestMethod -Uri $Uri -Headers @{
+        $response = Invoke-RestMethod -Uri $Uri -Headers @{
             Accept = 'application/vnd.github+json'
             'User-Agent' = 'remote-mng-installer'
             'X-GitHub-Api-Version' = '2022-11-28'
         } -TimeoutSec 60
+        # Invoke-RestMethod emits a JSON array as one non-enumerated object.
+        # Returning the assigned value exposes individual releases to callers.
+        return $response
     } catch {
         if ($AllowNotFound -and $_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
             return $null
