@@ -9,14 +9,14 @@
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/LX-Cel/remote-mng/main/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/LX-Cel/remote-mng/206ec39503bc21a23733fd0fb2a27204dbb67d2a/install.ps1 -OutFile install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Linux / WSL：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/LX-Cel/remote-mng/main/install.sh -o install.sh
+curl -fL https://raw.githubusercontent.com/LX-Cel/remote-mng/206ec39503bc21a23733fd0fb2a27204dbb67d2a/install.sh -o install.sh
 sh ./install.sh
 ```
 

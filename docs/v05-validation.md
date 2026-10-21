@@ -22,6 +22,8 @@ Release 附带安装脚本、各资产摘要、`SHA256SUMS.txt` 和 `release-val
 
 首次匿名公网检查发现 PowerShell 对 REST 数组的枚举差异；仅修正根 `install.ps1` 的响应展开，PS5/PS7 脚本回归 69 项通过。脚本和摘要作为安装入口修订 2 同步，ZIP/wheel 未替换。本机 WSL 公网检查在下载脚本前被 DNS 超时阻断，未执行安装，不计为安装通过或产品失败；上方 Linux CI 的真实制品验收独立成立。
 
+修正后的 README 下载入口固定为提交 `206ec39503bc21a23733fd0fb2a27204dbb67d2a`，避免分支 CDN 缓存返回旧脚本；脚本继续自动选择最新兼容程序。Windows 真实匿名公网首装已通过：未指定版本或预览、PATH 仅系统目录、清除 GitHub 令牌、不模拟 HTTPS，实际完成公共 API 选版、CDN 下载、完整清单校验、Skill、独立管理器、doctor 与网页验证，并保存 preview 通道。所有自建管理器已正常停止，未修改用户全局安装。
+
 ## 已完成的本地验证
 
 - 首轮本地全量：Windows 756 passed，105 skipped，113.92 秒；WSL 779 passed，50 skipped，96.06 秒；Ruff 通过。WSL 首轮发现真实 Bash 测试读入用户启动配置而触及 0.5 秒截止线，修正测试启动配置隔离后通过；生产 Shell 实现与严格超时断言未修改。最后的状态显示修复另做定向回归，并由上方最终提交的六组 CI 复验。

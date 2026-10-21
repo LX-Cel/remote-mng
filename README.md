@@ -31,7 +31,7 @@
 先下载 [install.ps1](install.ps1)，再运行下载到本地的脚本：
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/LX-Cel/remote-mng/main/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/LX-Cel/remote-mng/206ec39503bc21a23733fd0fb2a27204dbb67d2a/install.ps1 -OutFile install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -40,11 +40,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 先下载 [install.sh](install.sh)，再运行下载到本地的脚本：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/LX-Cel/remote-mng/main/install.sh -o install.sh
+curl -fL https://raw.githubusercontent.com/LX-Cel/remote-mng/206ec39503bc21a23733fd0fb2a27204dbb67d2a/install.sh -o install.sh
 sh ./install.sh
 ```
 
 **手动更新也是重新运行同一个脚本。** 程序负责检查活动、保留任务、切换版本和同步 Skill；有阻碍时说明原因，不能把“开始更新”当作“更新完成”。日常也可以直接让 Claude 更新，见 [更新说明](docs/updates.md)。
+
+下载地址固定到经过验证的安装脚本，避免分支缓存返回旧入口；脚本仍会自动选择兼容的最新程序版本。
 
 支持 Windows x86_64、Linux x86_64；WSL 在自身环境中安装。Windows 原生 Claude Code 需要 Git Bash；Linux/WSL 需要系统 `curl`、`awk`、`unzip` 和 `sha256sum`，缺少时会给出安装建议。默认安装到个人目录，不需要管理员权限，不改全局 PATH。自定义目录、离线包及源码维护见 [高级安装指南](docs/distribution.md)。
 
