@@ -29,7 +29,7 @@ jobs:
       - run: uv sync --frozen --group bundle
       - run: uv run --frozen pytest -q
       - id: build_bundle
-        run: uv run --frozen python scripts/build_release.py
+        run: uv run --frozen python scripts/build_release.py ${{ github.event_name == 'workflow_dispatch' && '--prerelease' || '' }}
       - name: Verify tag matches the built package
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -66,6 +66,9 @@ jobs:
       - name: Exercise foreground first install, repeat and actual previous release upgrade
         if: always() && steps.prepare_baseline.outcome == 'success'
         run: uv run --frozen python scripts/smoke_bootstrap.py --build-result dist/release/build-result.json --previous-build-result dist/previous/build-result.json
+      - name: Exercise self-contained offline installation with external transport forbidden
+        if: always() && steps.prepare_baseline.outcome == 'success'
+        run: uv run --frozen python scripts/smoke_bootstrap.py --build-result dist/release/build-result.json --previous-build-result dist/previous/build-result.json --offline-installer-result dist/release/offline-installer-result.json
       - name: Exercise independent update worker and manager recovery
         if: always() && steps.prepare_baseline.outcome == 'success'
         run: uv run --frozen python scripts/smoke_update.py --build-result dist/release/build-result.json --previous-build-result dist/previous/build-result.json
@@ -78,12 +81,18 @@ jobs:
           name: remote-mng-${{ runner.os }}-${{ runner.arch }}
           path: |
             dist/release/*.zip
+            dist/release/*-setup.exe
+            dist/release/*-setup.run
+            dist/release/*-setup.exe.sha256
+            dist/release/*-setup.run.sha256
             dist/release/*.zip.sha256
             dist/release/*.release.json
             dist/release/build-result.json
             dist/release/smoke-result.json
             dist/release/bootstrap-smoke-result.json
             dist/release/bootstrap-previous-manager.log
+            dist/release/offline-installer-result.json
+            dist/release/offline-installer-smoke-result.json
             dist/release/worker-smoke-result.json
             dist/release/source-worker-smoke-result.json
       - name: Retain one canonical universal Python package
@@ -120,4 +129,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.zip artifacts/*.whl artifacts/*.sha256 artifacts/*.release.json artifacts/install-release.sh artifacts/install-release.ps1 artifacts/install.sh artifacts/install.ps1 --verify-tag --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+        run: gh release create "$RELEASE_TAG" artifacts/*.zip artifacts/*-setup.exe artifacts/*-setup.run artifacts/*.whl artifacts/*.sha256 artifacts/*.release.json artifacts/install-release.sh artifacts/install-release.ps1 artifacts/install.sh artifacts/install.ps1 --verify-tag --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"

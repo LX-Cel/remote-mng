@@ -120,7 +120,8 @@
 
   function renderUpdates(value) {
     updateSnapshot = value;
-    updatePlan = value.latest_plan || null;
+    const offline = value.delivery === "offline" || value.latest_plan?.delivery === "offline";
+    updatePlan = offline ? null : value.latest_plan || null;
     const installation = value.installation || {};
     const components = value.components || {};
     const types = {managed: "独立安装包", standalone: "独立安装包", distribution: "独立安装包", source: "源码安装", source_checkout: "源码工作区", python_environment: "Python 环境安装", uv: "uv 工具安装", uv_tool: "uv 工具安装", unknown: "安装方式待确认"};
@@ -129,9 +130,10 @@
     facts.replaceChildren();
     const data = el("dl", null, "facts");
     addFact(data, "安装方式", types[kind] || kind || "待确认");
+    addFact(data, "更新方式", offline ? "离线安装包" : "联网下载");
     addFact(data, "更新通道", value.channel === "preview" ? "预览版（已记住）" : "正式版");
     const source = installation.repository || installation.source?.repository || installation.origin?.repository;
-    addFact(data, "更新来源", typeof source === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(source) ? source : "尚未记录 GitHub 发布来源");
+    addFact(data, "更新来源", offline ? "本地离线安装包" : typeof source === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(source) ? source : "尚未记录 GitHub 发布来源");
     for (const [name, label] of [["cli", "CLI"], ["daemon", "运行中的管理器"], ["skill", "Claude Skill"]]) {
       const part = components[name];
       const version = typeof part === "string" ? part : part?.version;
@@ -143,7 +145,7 @@
     facts.append(data);
     const plan = $("update-plan");
     plan.replaceChildren();
-    $("update-summary").textContent = updatePlan ? stateName(updatePlan.state) : "尚未检查新版。点击“检查新版”后显示目标版本与更新影响。";
+    $("update-summary").textContent = offline ? "已使用离线安装。通过新版离线安装包更新，保留现有任务和个人配置；本机不会联网检查新版。" : updatePlan ? stateName(updatePlan.state) : "尚未检查新版。点击“检查新版”后显示目标版本与更新影响。";
     if (acceptedUpdate) $("update-summary").textContent = `更新 ID · ${acceptedUpdate.id} · ${stateName(acceptedUpdate.state)}${acceptedUpdate.monitor_url ? "" : " · 可继续查询此记录"}`;
     if (value.pending_recovery) {
       plan.append(el("p", `更新 ${value.pending_recovery.id} 需要恢复。${updateMessage(value.pending_recovery.advice) || "请在下方更新记录中检查影响并恢复此更新。"}`, "advice"));
@@ -152,6 +154,7 @@
     if (!updatePlan) {
       for (const blocker of value.blockers || []) plan.append(el("p", updateMessage(blocker), "advice"));
     }
+    if (offline) plan.append(el("p", "将适合本机系统的新版安装包带入当前环境并运行。安装器会检查活动、同步程序与 Skill，完成后请新开 Claude Code 会话。", "advice"));
     if (updatePlan) {
       const info = el("div", null, "update-release");
       info.append(el("h3", `${updatePlan.current_version || installation.current_version || "当前版本"} → ${updatePlan.target_version || "待确认"}`));
@@ -171,6 +174,7 @@
     }
     $("install-update").hidden = updatePlan?.state !== "ready" || !updatePlan?.id;
     $("install-update").disabled = updateBusy;
+    $("check-update").hidden = offline;
     $("check-update").disabled = updateBusy;
     $("rollback-update").hidden = !installation.previous_version;
     $("rollback-update").disabled = updateBusy;
@@ -221,6 +225,10 @@
 
   async function runUpdateAction(action, body) {
     if (updateBusy) return;
+    if (["check", "start"].includes(action) && (updateSnapshot?.delivery === "offline" || updateSnapshot?.latest_plan?.delivery === "offline")) {
+      notice("当前使用离线安装。请通过新版离线安装包更新，本机不会联网检查新版。");
+      return;
+    }
     updateBusy = true;
     if (updateSnapshot) renderUpdates(updateSnapshot);
     try {

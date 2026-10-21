@@ -55,7 +55,7 @@ async def _finish(home, root, claude, record, version, no_start):
 
 
 async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=None,
-                  repository, tag, preview=False, no_start=False):
+                  repository, tag, preview=False, no_start=False, offline=False):
     """Install or update the selected verified package without manual sequencing."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or "") or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag or ""):
         raise RemoteError("invalid_release_source", "Select an exact release from a GitHub owner/repository")
@@ -105,6 +105,11 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
         source_binding = (not installed.get("installed") and skill.get("installed") and
                           len(binding) == 4 and binding[1:] == ["-P", "-m", "remote_mng"])
         if source_binding:
+            if offline:
+                raise RemoteError("offline_source_installation_unsupported",
+                                  "This offline package cannot replace an existing Python/uv installation. Its program, Skill and manager were preserved; use a supported standalone installation for offline updates.",
+                                  {"source_mutation_attempted": False, "installation_changed": False,
+                                   "network_checked": False})
             from .bootstrap_source import prepare_existing_uv
             from .releases import get_release
             if daemon.get("running") and not daemon.get("update", {}).get("ready"):
@@ -128,12 +133,18 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
             if not no_start:
                 await updates._preflight_process(home, record, [str(candidate / manifest["executable"])], version)
             result = await dist.install_artifact(cached, sha256, install_dir=root, home=home, claude_dir=claude, source=source)
+            if offline:
+                # Even a later startup blocker leaves a real offline program
+                # installed; its Agent must not fall back to online discovery.
+                updates.save_delivery(home, "offline")
             try:
                 doctor = await _finish(home, root, claude, record, version, no_start)
             except RemoteError as exc:
                 return _response({"state": "blocked", "error": exc.as_dict(), "installed": True}, root, version, "installed")
             updates.save_channel(home, "preview" if preview else "stable")
-            return _response({**result, "doctor": doctor, "channel": "preview" if preview else "stable"}, root, version, "installed")
+            updates.save_delivery(home, "offline" if offline else "online")
+            return _response({**result, "doctor": doctor, "channel": "preview" if preview else "stable",
+                              "delivery": "offline" if offline else "online"}, root, version, "installed")
         blockers = updates._blockers(installation, daemon, skill)
         if blockers:
             raise RemoteError("update_blocked", "Finish the reported activity, then run this same installer again.", {"blockers": blockers})
@@ -142,6 +153,7 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
         reported_root = Path(installation["prefix"]) if source_binding else root
         current_version = installation["current_version"]
         if tuple(map(int, current_version.split("."))) > tuple(map(int, version.split("."))):
+            updates.save_delivery(home, "offline" if offline else "online")
             return _response({"state": "succeeded", "changed": False,
                               "message": "A newer version is already installed; it was retained."}, reported_root, current_version, "unchanged")
         if current_version == version:
@@ -153,15 +165,19 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
                 await dist.prepare_artifact(cached, sha256, install_dir=root, home=home, claude_dir=claude, source=source)
                 await _finish(home, root, claude, {"id": update_id}, version, no_start)
             updates.save_channel(home, "preview" if preview else "stable")
-            return _response({"state": "succeeded", "changed": False}, reported_root, version, "unchanged")
+            updates.save_delivery(home, "offline" if offline else "online")
+            return _response({"state": "succeeded", "changed": False,
+                              "delivery": "offline" if offline else "online"}, reported_root, version, "unchanged")
         plan = {"id": uuid.uuid4().hex, "action": "update", "state": "ready", "created_at": time.time(),
                 "current_version": current_version, "target_version": version,
                 "home": str(home), "install_dir": str(root), "claude_dir": str(claude),
                 "installation": installation, "release": release,
-                "restore_daemon": not no_start, "channel": "preview" if preview else "stable"}
+                "restore_daemon": not no_start, "channel": "preview" if preview else "stable",
+                "offline": bool(offline), "delivery": "offline" if offline else "online"}
         record = {"id": update_id, "state": "queued", "created_at": time.time(), "updated_at": time.time(),
                   "plan": plan, "installation": installation, "events": [], "external_installer": True,
                   "updater_command": [str(candidate / manifest["executable"])],
+                  "offline": bool(offline),
                   "remote_helpers_changed": False, "data_migrated": False}
         if prepared is not None:
             record["source_prepared"] = prepared

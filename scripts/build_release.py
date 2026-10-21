@@ -35,7 +35,7 @@ def build_wheel(root, output, version):
             "sha256": digest, "bytes": wheel.stat().st_size}
 
 
-def build(output):
+def build(output, *, prerelease=False):
     root = Path(__file__).resolve().parents[1]
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -79,10 +79,19 @@ def build(output):
               "platform": source["platform"], "version": source["version"], "frozen_probe": verified,
               "release_metadata": str(metadata_path), "wheel": wheel}
     (output / "build-result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    command = [sys.executable, str(root / "scripts/build_offline_installer.py"),
+               "--build-result", str(output / "build-result.json"), "--output", str(output)]
+    if prerelease:
+        command.append("--prerelease")
+    subprocess.run(command, cwd=root, check=True)
+    result["offline_installer"] = json.loads((output / "offline-installer-result.json").read_text(encoding="utf-8"))
+    (output / "build-result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("dist/release"))
-    build(parser.parse_args().output)
+    parser.add_argument("--prerelease", action="store_true", help="Mark the offline installer's saved update channel as preview")
+    options = parser.parse_args()
+    build(options.output, prerelease=options.prerelease)

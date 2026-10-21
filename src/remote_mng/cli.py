@@ -98,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--tag", required=True)
     bootstrap.add_argument("--preview", action="store_true")
     bootstrap.add_argument("--no-start", action="store_true")
+    bootstrap.add_argument("--offline", action="store_true")
     groups._choices_actions = [item for item in groups._choices_actions if item.dest != "bootstrap"]
     update = _sub(groups, "update", "Check, update or recover this installation without opening remote connections")
     update.set_defaults(action="start", install_dir=None, claude_dir=None, repository=None, tag=None,
@@ -515,9 +516,10 @@ async def dispatch(args: argparse.Namespace) -> Any:
         return await setup(args.home, args.claude_dir, binding=binding, start_daemon=args.start_daemon)
     if args.group == "bootstrap":
         from .installer import install
+        offline_options = {"offline": True} if args.offline else {}
         return await install(args.archive, args.sha256, home=args.home, install_dir=args.install_dir,
                              claude_dir=args.claude_dir, repository=args.repository, tag=args.tag,
-                             preview=args.preview, no_start=args.no_start)
+                             preview=args.preview, no_start=args.no_start, **offline_options)
     if args.group == "update":
         from .updates import check_update, update_status, start_update, run_worker
         if args.action == "_run":

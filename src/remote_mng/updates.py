@@ -217,7 +217,8 @@ async def update_status(home=None, install_dir=None, claude_dir=None, update_id=
         "helper": {"state": "not_checked", "protocol": CONTRACTS["helper_protocol"],
                    "advice": "Remote helpers are unchanged. Run target inspect on a selected target before new durable jobs; query existing IDs first."}},
         "blockers": _blockers(installation, daemon, skill), "history": history, "latest_plan": plan, "pending_recovery": pending,
-        "channel": update_channel(home), "automatic_updates": False, "remote_checked": False, "network_checked": False}
+        "channel": update_channel(home), "delivery": update_delivery(home),
+        "automatic_updates": False, "remote_checked": False, "network_checked": False}
 
 
 def _gh(arguments, timeout=60):
@@ -242,20 +243,43 @@ def _release(repository, tag=None, channel="stable"):
     return get_release(repository, tag, channel=channel, gh_runner=_gh)
 
 
-def update_channel(home):
+def _preferences(home):
     path = _directory(home) / "preferences.json"
     if not path.exists():
-        return "stable"
+        return {"format": 1, "channel": "stable", "delivery": "online"}
     saved = _read(path)
     if saved.get("format") != 1 or saved.get("channel") not in {"stable", "preview"}:
         raise RemoteError("invalid_update_preferences", "The saved update channel needs inspection")
-    return saved["channel"]
+    if saved.get("delivery", "online") not in {"online", "offline"}:
+        raise RemoteError("invalid_update_preferences", "The saved update delivery preference needs inspection")
+    return {**saved, "delivery": saved.get("delivery", "online")}
+
+
+def update_channel(home):
+    return _preferences(home)["channel"]
+
+
+def update_delivery(home):
+    return _preferences(home)["delivery"]
 
 
 def save_channel(home, channel):
     if channel not in {"stable", "preview"}:
         raise RemoteError("invalid_update_channel", "Select stable or preview")
-    dist._json(_directory(home, create=True) / "preferences.json", {"format": 1, "channel": channel})
+    saved = _preferences(home)
+    dist._json(_directory(home, create=True) / "preferences.json", {**saved, "channel": channel})
+
+
+def save_delivery(home, delivery):
+    if delivery not in {"online", "offline"}:
+        raise RemoteError("invalid_update_delivery", "Select online or offline delivery")
+    saved = _preferences(home)
+    dist._json(_directory(home, create=True) / "preferences.json", {**saved, "delivery": delivery})
+
+
+def _offline_update_blocker():
+    return {"code": "offline_update_required",
+            "message": "This installation uses offline packages. Copy a newer complete installer package into this environment and run its local installer; no release lookup was attempted."}
 
 
 async def check_update(home=None, install_dir=None, claude_dir=None, repository=None, tag=None, channel=None):
@@ -265,6 +289,19 @@ async def check_update(home=None, install_dir=None, claude_dir=None, repository=
     selected_channel = channel or update_channel(home)
     if selected_channel not in {"stable", "preview"}:
         raise RemoteError("invalid_update_channel", "Select stable or preview")
+    if update_delivery(home) == "offline":
+        plan_id = uuid.uuid4().hex
+        plan = {"id": plan_id, "plan_id": plan_id, "state": "blocked", "action": "update", "created_at": time.time(),
+                "expires_at": time.time() + PLAN_LIFETIME, "current_version": installation["current_version"],
+                "target_version": None, "release": None, "installation": installation,
+                "channel": selected_channel, "delivery": "offline", "offline": True,
+                "home": str(home), "install_dir": str(root), "claude_dir": str(claude),
+                "blockers": [*current["blockers"], _offline_update_blocker()], "network_checked": False,
+                "advice": "Run the local installer from a newer complete offline package to update the program and Skill."}
+        directory = _directory(home, create=True)
+        dist._json(directory / f"plan-{plan_id}.json", plan)
+        dist._json(directory / "latest-plan.json", plan)
+        return plan
     if selected_channel == "stable":
         release = await asyncio.to_thread(_release, repository or installation["repository"], tag)
     else:
@@ -290,7 +327,7 @@ async def check_update(home=None, install_dir=None, claude_dir=None, repository=
     plan = {"id": plan_id, "plan_id": plan_id, "state": state, "action": "update", "created_at": time.time(),
             "expires_at": time.time() + PLAN_LIFETIME, "current_version": current_version,
             "target_version": release["version"], "release": release, "installation": installation,
-            "ahead_of_release": ahead, "channel": selected_channel,
+            "ahead_of_release": ahead, "channel": selected_channel, "delivery": "online",
             "home": str(home), "install_dir": str(root), "claude_dir": str(claude), "blockers": blockers,
             "compatibility": {"required_contracts": CONTRACTS, "checked": "candidate_preparation_required",
                               "data_migration": False, "remote_helpers_changed": False},
@@ -389,6 +426,9 @@ async def start_update(home=None, install_dir=None, claude_dir=None, plan_id=Non
     else:
         options = {"channel": channel} if channel is not None else {}
         plan = await check_update(home, root, claude, repository, tag, **options)
+    if plan["action"] == "update" and update_delivery(home) == "offline":
+        raise RemoteError("offline_update_required", _offline_update_blocker()["message"],
+                          {"blockers": [_offline_update_blocker()], "plan_id": plan["id"], "network_checked": False})
     if plan["state"] == "up_to_date":
         if plan.get("channel"):
             save_channel(home, plan["channel"])
@@ -404,7 +444,7 @@ async def start_update(home=None, install_dir=None, claude_dir=None, plan_id=Non
         raise RemoteError("update_plan_stale", "The installed version changed after this plan; check again")
     blockers = _blockers(installation, await _daemon(home), skill_install.skill_status(claude))
     # An explicitly pinned lower release remains forbidden even if activity has changed.
-    blockers += [b for b in plan.get("blockers", []) if b["code"] in {"release_older_than_installed", "release_wheel_unavailable"}]
+    blockers += [b for b in plan.get("blockers", []) if b["code"] in {"release_older_than_installed", "release_wheel_unavailable", "offline_update_required"}]
     if blockers:
         raise RemoteError("update_blocked", "Resolve the update blockers before starting; no update was launched", {"blockers": blockers, "plan_id": plan["id"]})
     try:
@@ -495,9 +535,13 @@ async def recover_update(home=None, install_dir=None, claude_dir=None, update_id
                     "current_version": current["current_version"], "target_version": target_version,
                     "home": str(home), "install_dir": str(root), "claude_dir": str(claude), "installation": current,
                     "restore_daemon": bool(original.get("daemon_was_running"))}
+            if original.get("offline") or saved.get("offline"):
+                plan["offline"] = True
             record = {"id": recovery_id, "recovery_of": original["id"], "state": "queued", "plan": plan,
                       "installation": current, "created_at": time.time(), "updated_at": time.time(), "events": [],
                       "data_migrated": False, "remote_helpers_changed": False}
+            if plan.get("offline"):
+                record["offline"] = True
             prefix = command_prefix()
             if source:
                 record.update(source_prepared=prepared, updater_command=original["updater_command"])
@@ -640,6 +684,9 @@ async def _execute(home, record):
         archive = work / release["asset"]
         _progress(home, record, "downloading")
         if not archive.exists():
+            if record.get("offline") or plan.get("offline"):
+                raise RemoteError("offline_artifact_missing", "The cached offline package is missing. Copy the complete installer package again; no download was attempted.",
+                                  {"network_checked": False, "installation_changed": False})
             await asyncio.to_thread(dist.download_release, release["repository"], release["tag"], release["asset"], release["sha256"], archive)
         _progress(home, record, "preparing")
         source = {key: release[key] for key in ("repository", "tag", "asset", "sha256")}
@@ -836,6 +883,8 @@ async def run_worker(home, update_id, *, monitor_lifetime=None):
             _progress(home, record, "failed", error={"code": "update_failed", "message": "The update could not complete; inspect its state and recovery result"})
         if record.get("state") == "succeeded" and record["plan"].get("channel"):
             save_channel(home, record["plan"]["channel"])
+        if record.get("state") == "succeeded" and record["plan"].get("delivery"):
+            save_delivery(home, record["plan"]["delivery"])
         lock.release()
         if monitor and not handed_off:
             # An old uv interpreter must not keep its environment locked after

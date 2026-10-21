@@ -6,7 +6,7 @@
 
 工具随包提供 Claude Code Skill，主入口是 `rmg` CLI。Skill 告诉 Agent 如何检查条件、记录步骤、保存任务 ID，以及如何处理断线和结果不明。MCP 保留为可选适配层，默认使用不需要配置 MCP。remote-mng 本身不内置模型，也不替代项目的构建脚本和业务验证规则。
 
-仓库已公开，当前提供 **[v0.5.0 预发布版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0)**，支持下面的统一安装与更新入口。Windows 和 Linux 的真实首装、重复运行及官方 0.4 升级已通过；部分 Windows 宿主仍限制后台独立进程，具体来源、验收和边界见 [0.5 验收记录](docs/v05-validation.md)。
+仓库已公开。正在验收的 **0.6.0 离线安装器尚未发布**；下面介绍新的安装方式，正式资产上传后才能下载使用。已发布的 [v0.5.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0) 仍可通过可选在线脚本安装；其验证范围见 [0.5 验收记录](docs/v05-validation.md)。
 
 ## 它解决什么问题
 
@@ -24,31 +24,30 @@
 
 ## 一次安装，之后用自然语言
 
-**只需按本机系统选择下面一种方式。** 在普通系统终端中下载脚本，查看内容后运行；脚本选择适合的平台包、验证摘要、安装程序和 Skill，并启动本地管理器。无需安装 Python、uv 或 GitHub CLI，也无需自己选择 ZIP 和填写摘要。当前预览期会自动提示并选择支持新入口的预览版。
+**下载一个适合本机系统的离线安装包，运行即可。** 程序、依赖、Claude Code Skill 和远端 helper 均包含在安装包中，安装时不访问 GitHub 或软件源，也不要求预装 Python、uv、GitHub CLI、curl 或 unzip。可在能联网的电脑下载，再按公司的文件流转要求带入内网。
 
-### Windows PowerShell
+0.6.0 候选安装包的文件名及使用方式如下；**目前尚无可下载的 0.6.0 发布资产**。
 
-先下载 [install.ps1](install.ps1)，再运行下载到本地的脚本：
-
-```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/LX-Cel/remote-mng/206ec39503bc21a23733fd0fb2a27204dbb67d2a/install.ps1 -OutFile install.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-### Linux / WSL
-
-先下载 [install.sh](install.sh)，再运行下载到本地的脚本：
+| 本机系统 | 离线安装包 | 怎么安装 |
+| --- | --- | --- |
+| Windows x86_64 | `remote-mng-0.6.0-windows-x86_64-setup.exe` | 双击运行 |
+| Linux / WSL x86_64 | `remote-mng-0.6.0-linux-x86_64-setup.run` | 赋予执行权限后运行，见下方两行命令 |
 
 ```sh
-curl -fL https://raw.githubusercontent.com/LX-Cel/remote-mng/206ec39503bc21a23733fd0fb2a27204dbb67d2a/install.sh -o install.sh
-sh ./install.sh
+chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
+./remote-mng-0.6.0-linux-x86_64-setup.run
 ```
 
-**手动更新也是重新运行同一个脚本。** 程序负责检查活动、保留任务、切换版本和同步 Skill；有阻碍时说明原因，不能把“开始更新”当作“更新完成”。日常也可以直接让 Claude 更新，见 [更新说明](docs/updates.md)。
+安装器默认安装到个人目录、安装 Skill 并启动本地管理器，不需要管理员权限，也不改全局 PATH。安装成功后会显示实际结果；遇到活动任务或配置冲突时说明原因。**离线更新同样只需带入并运行新版安装包**，已有任务和个人配置会保留。重新运行旧安装包不会获取新版。
 
-下载地址固定到经过验证的安装脚本，避免分支缓存返回旧入口；脚本仍会自动选择兼容的最新程序版本。
+离线安装会记住离线更新方式，Agent 和控制台会提示“通过新版离线安装包更新”，不会为了查新访问 GitHub。安装包仍需来自可信来源；公司禁止的程序或进程行为不会由安装器绕过。Windows 原生 Claude Code 需要已有的 Git Bash；Linux 包依赖受支持的 glibc，WSL 在自身环境中安装。旧 uv/Python 环境的离线迁移暂不支持，详见 [安装指南](docs/distribution.md)。
 
-支持 Windows x86_64、Linux x86_64；WSL 在自身环境中安装。Windows 原生 Claude Code 需要 Git Bash；Linux/WSL 需要系统 `curl`、`awk`、`unzip` 和 `sha256sum`，缺少时会给出安装建议。默认安装到个人目录，不需要管理员权限，不改全局 PATH。自定义目录、离线包及源码维护见 [高级安装指南](docs/distribution.md)。
+<details>
+<summary>可选：网络可用时，用在线脚本安装和更新</summary>
+
+已发布的 0.5.0 支持在线脚本。先将脚本下载到本地，查看内容后在普通系统终端运行。Windows 使用 [install.ps1](install.ps1)，Linux/WSL 使用 [install.sh](install.sh)。它们会联网选择并下载版本；手动更新可重新运行同一脚本。完整命令和适用条件见 [在线安装说明](docs/distribution.md#可选在线安装)。
+
+</details>
 
 ### 开始第一次任务
 
@@ -102,9 +101,9 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 
 > 检查 remote-mng 是否有新版，说明更新影响。如果没有阻碍，更新到最新版，保留已有任务，完成后核对程序、管理器和 Skill 版本。
 
-0.5 的统一入口会记住所选更新通道：预览安装后，Agent 后续查新仍包含预览版本；正式通道只选择正式发布。公开仓库通过 HTTPS 获取发布信息，无需登录 GitHub。版本、摘要、更新记录、进度及恢复证据由工具管理，开发者不需要记住这些参数。
+离线安装时，Claude 会读取本地状态并提示需要新版离线安装包，不会联网查新。将新版安装包带入环境并运行即可更新；你也可以让 Claude 核对包的路径和当前活动，在安装后确认组件版本。
 
-手动更新时，重新运行上面的安装脚本即可。活动前台、正在执行的操作、Skill 本地修改或兼容性不明会阻止切换；脚本不为了更新强行关闭它们。0.3 等旧版缺少安全更新协议，正在运行的旧管理器会明确阻碍迁移，先让 Agent 核对活动和作业 ID，在你允许普通前台断开后处理。详情见 [旧版迁移与恢复](docs/updates.md)。
+在线安装则按保存的正式或预览通道查询 GitHub，支持让 Agent 更新，或重跑在线脚本。活动前台、正在执行的操作、Skill 本地修改或兼容性不明会阻止切换；安装器不为了更新强行关闭它们。0.3 等旧版缺少安全更新协议，正在运行的旧管理器会明确阻碍迁移，先让 Agent 核对活动和作业 ID，在你允许普通前台断开后处理。详情见 [更新与恢复](docs/updates.md)。
 
 独立安装保留兼容版本供回退；受支持的 uv 安装在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。各平台实际验证范围见 [0.5 验收记录](docs/v05-validation.md)。
 
@@ -123,7 +122,7 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 
 | 你想做什么 | 阅读 |
 | --- | --- |
-| 首次安装与固定版本离线安装 | [独立包安装](docs/distribution.md) · [Claude Skill 接入](docs/claude-skill.md) |
+| 首次安装、离线更新与目录设置 | [安装指南](docs/distribution.md) · [Claude Skill 接入](docs/claude-skill.md) |
 | 跑通第一个业务任务 | [个人试用指南](docs/personal-trial.md) · [项目配方](examples/rmg-project.json) |
 | 配置设备、跳板、代理和传包 | [连接基础](docs/transports.md) · [连接与文件恢复](docs/transports-v03.md) |
 | 操作交互前台和同一 Shell | [Agent 操作约定](docs/agent-guide.md) · [Shell 命令](docs/shell-v03.md) |

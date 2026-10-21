@@ -391,3 +391,107 @@ def test_bootstrap_cli_omits_context_for_owned_installation_discovery(monkeypatc
     capsys.readouterr()
     mocked.assert_awaited_once_with("release.zip", "a" * 64, home=None, install_dir=None, claude_dir=None,
                                     repository="owner/repo", tag="v0.5.0", preview=False, no_start=False)
+
+
+@pytest.mark.asyncio
+async def test_offline_fresh_install_and_upgrade_keep_delivery_and_local_journal(tmp_path, environment, monkeypatch):
+    from remote_mng import releases
+    monkeypatch.setattr(releases, "get_release", lambda *args, **kwargs: pytest.fail("An offline installation must not discover releases"))
+    first = await install_version(tmp_path, environment, offline=True, preview=True)
+    paths = environment["paths"]
+    assert first["state"] == "succeeded" and first["delivery"] == "offline"
+    assert updates.update_delivery(paths["home"]) == "offline"
+    seed_durable_state(paths["home"])
+    result = await install_version(tmp_path, environment, "0.6.0", offline=True, preview=True)
+    assert result["state"] == "succeeded" and result["retained_job_references"] == 1
+    journal = updates._read(updates._directory(paths["home"]) / f"update-{result['id']}.json")
+    assert journal["offline"] and journal["plan"]["offline"]
+    assert journal["plan"]["delivery"] == "offline"
+    status = await updates.update_status(**paths)
+    assert status["delivery"] == "offline" and status["channel"] == "preview"
+    assert not status["network_checked"] and not status["remote_checked"]
+
+
+@pytest.mark.asyncio
+async def test_repeating_online_bootstrap_can_resume_online_delivery(tmp_path, environment):
+    await install_version(tmp_path, environment, offline=True)
+    assert updates.update_delivery(environment["paths"]["home"]) == "offline"
+    result = await install_version(tmp_path, environment)
+    assert result["state"] == "succeeded" and result["action"] == "unchanged"
+    assert updates.update_delivery(environment["paths"]["home"]) == "online"
+
+
+@pytest.mark.asyncio
+async def test_blocked_start_after_offline_install_keeps_offline_update_policy(tmp_path, environment):
+    environment["verify_fail"].add("0.5.0")
+    result = await install_version(tmp_path, environment, offline=True)
+    assert result["state"] == "blocked" and result["installed"]
+    assert updates.update_delivery(environment["paths"]["home"]) == "offline"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offline", [False, True])
+async def test_failed_upgrade_preserves_original_offline_delivery(tmp_path, environment, offline):
+    await install_version(tmp_path, environment, offline=True)
+    environment["verify_fail"].add("0.6.0")
+    result = await install_version(tmp_path, environment, "0.6.0", offline=offline)
+    assert result["state"] == "failed" and result["recovery"]["state"] == "restored"
+    assert updates.update_delivery(environment["paths"]["home"]) == "offline"
+
+
+@pytest.mark.asyncio
+async def test_offline_install_keeps_retained_local_rollback_available(tmp_path, environment, monkeypatch):
+    monkeypatch.setattr(updates, "_release", lambda *args, **kwargs: pytest.fail("Local rollback must not discover releases"))
+    await install_version(tmp_path, environment, offline=True)
+    await install_version(tmp_path, environment, "0.6.0", offline=True)
+    paths = environment["paths"]
+    record = {"id": "f" * 32, "state": "queued", "offline": True, "plan": {
+        "action": "rollback", "current_version": "0.6.0", "target_version": "0.5.0",
+        "install_dir": str(paths["install_dir"]), "claude_dir": str(paths["claude_dir"]), "offline": True}}
+    await updates._execute(paths["home"], record)
+    assert record["state"] == "rolled_back" and record["version"] == "0.5.0"
+    assert environment["daemon"]["running"] and environment["daemon"]["version"] == "0.5.0"
+    assert updates.update_delivery(paths["home"]) == "offline"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("running", [False, True])
+async def test_offline_uv_binding_blocks_before_network_or_environment_mutation(tmp_path, environment, monkeypatch, running):
+    from remote_mng import bootstrap_source, releases
+    paths = environment["paths"]
+    python = tmp_path / "uv-tools/remote-mng/Scripts/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"original Python environment")
+    receipt = python.parent.parent / "uv-receipt.toml"
+    receipt.write_text("original uv receipt", encoding="utf-8")
+    skill_install.install_skill(paths["claude_dir"], binding=[str(python), "-P", "-m", "remote_mng"])
+    extension = paths["claude_dir"] / "remote-mng/USER.md"
+    extension.parent.mkdir()
+    extension.write_text("personal offline instructions", encoding="utf-8")
+    original = {path: path.read_bytes() for path in [python, receipt, extension,
+                paths["claude_dir"] / "skills/remote-mng/SKILL.md"]}
+    environment["daemon"] = {"running": running, "version": "0.5.0",
+                             "update": {"ready": True, "blockers": []}}
+    daemon = copy.deepcopy(environment["daemon"])
+    snapshot = AsyncMock(side_effect=AssertionError("Offline UV must not start source preparation"))
+    monkeypatch.setattr(bootstrap_source, "prepare_existing_uv", snapshot)
+    monkeypatch.setattr(releases, "get_release", lambda *args, **kwargs: pytest.fail("Offline UV must not contact GitHub"))
+    with pytest.raises(RemoteError) as caught:
+        await install_version(tmp_path, environment, "0.6.0", offline=True)
+    assert caught.value.code == "offline_source_installation_unsupported"
+    assert caught.value.details == {"source_mutation_attempted": False, "installation_changed": False,
+                                    "network_checked": False}
+    snapshot.assert_not_awaited()
+    assert environment["daemon"] == daemon and environment["calls"] == []
+    assert original == {path: path.read_bytes() for path in original}
+    assert not dist.installation_status(paths["install_dir"])["installed"]
+    assert not (updates._directory(paths["home"]) / "preferences.json").exists()
+
+
+def test_bootstrap_cli_passes_offline_only_when_requested(monkeypatch, capsys):
+    mocked = AsyncMock(return_value={"state": "succeeded"})
+    monkeypatch.setattr(installer, "install", mocked)
+    assert cli.main(["bootstrap", "release.zip", "--sha256", "a" * 64, "--repository", "owner/repo",
+                     "--tag", "v0.6.0", "--offline", "--json"]) == 0
+    capsys.readouterr()
+    assert mocked.await_args.kwargs["offline"] is True

@@ -113,6 +113,61 @@ function response(path, options) { assert.equal(path, '/update/api/status'); ass
 """.replace("SCRIPT_PATH", json.dumps(str(ASSETS / "update.js"))))
 
 
+def test_offline_install_shows_local_package_guidance_and_never_submits_network_update():
+    run_node(r"""
+const state = {delivery: 'offline', channel: 'preview', installation: {kind: 'standalone', current_version: '0.6.0', previous_version: '0.5.0'},
+  latest_plan: {id: 'old-online-plan', state: 'ready', current_version: '0.5.0', target_version: '0.6.0'}, history: []};
+function response(path) {
+  if (path.endsWith('/overview')) return {server: {}, targets: [], tasks: [], sessions: [], operations: []};
+  if (path === '/ui/api/update') return state;
+  if (path === '/ui/api/update/rollback') return {id: 'offline-rollback', state: 'rolled_back'};
+  throw Error('Unexpected request ' + path);
+}
+(async () => {
+  run(SCRIPT_PATH); await flush();
+  const facts = textTree(document.getElementById('update-components'));
+  assert(facts.includes('离线安装包'));
+  assert(!facts.includes('GitHub'));
+  assert(document.getElementById('update-summary').textContent.includes('通过新版离线安装包更新'));
+  assert(!textTree(document.getElementById('update-plan')).includes('old-online-plan'));
+  assert.equal(document.getElementById('check-update').hidden, true);
+  assert.equal(document.getElementById('install-update').hidden, true);
+  assert.equal(document.getElementById('rollback-update').hidden, false);
+  const count = requests.length;
+  await document.getElementById('check-update').handlers.click(); await flush();
+  await document.getElementById('install-update').handlers.click(); await flush();
+  assert.equal(requests.length, count);
+  context.confirm = () => true;
+  await document.getElementById('rollback-update').handlers.click(); await flush();
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), {version: '0.5.0'});
+  assert.equal(navigations.length, 0);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("SCRIPT_PATH", json.dumps(str(ASSETS / "app.js"))))
+
+
+def test_offline_check_result_changes_the_guidance_without_showing_a_version_transition():
+    run_node(r"""
+const state = {installation: {kind: 'standalone', current_version: '0.6.0'}, history: []};
+function response(path) {
+  if (path.endsWith('/overview')) return {server: {}, targets: [], tasks: [], sessions: [], operations: []};
+  if (path === '/ui/api/update') return state;
+  if (path === '/ui/api/update/check') return {state: 'blocked', delivery: 'offline', blockers: [{code: 'offline_update_required'}]};
+  throw Error('Unexpected request ' + path);
+}
+(async () => {
+  run(SCRIPT_PATH); await flush();
+  await document.getElementById('check-update').handlers.click(); await flush();
+  assert.equal(document.getElementById('check-update').hidden, true);
+  assert.equal(document.getElementById('install-update').hidden, true);
+  assert(document.getElementById('update-summary').textContent.includes('通过新版离线安装包更新'));
+  assert(!textTree(document.getElementById('update-plan')).includes('待确认'));
+  const count = requests.length;
+  await document.getElementById('check-update').handlers.click(); await flush();
+  assert.equal(requests.length, count);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("SCRIPT_PATH", json.dumps(str(ASSETS / "app.js"))))
+
+
 def test_delayed_monitor_is_accepted_and_followed_using_the_existing_update_id():
     run_node(r"""
 const plan = {id: 'checked-plan', state: 'ready', current_version: '0.3.0', target_version: '0.4.0'};
