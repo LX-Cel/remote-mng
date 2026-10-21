@@ -1,12 +1,12 @@
 # remote-mng
 
-**让 Agent 可靠地操作远程设备，让开发者看清执行过程和结果。**
+**让 Agent 可靠地操作远程设备，让开发者直接配置、看清过程并接管调试。**
 
-在本地向 **Claude Code 终端 CLI** 描述需求，由它调用 remote-mng 完成远程连接、传包、部署、交互调试和长任务查询。开发者通过自然语言安排工作，通过本地网页查看设备、任务、日志和待处理事项；日常 CLI 参数交给 Agent。
+在本地向 **Claude Code 终端 CLI** 描述需求，由它调用 remote-mng 完成远程连接、传包、部署、交互调试和长任务查询。开发者也可以在本地网页直接配置设备、管理交互模板、运行常用操作、查看任务和接管会话；网页与 Agent 使用同一份配置和执行记录，日常 CLI 参数仍可交给 Agent。
 
 工具随包提供 Claude Code Skill，主入口是 `rmg` CLI。Skill 告诉 Agent 如何检查条件、记录步骤、保存任务 ID，以及如何处理断线和结果不明。MCP 保留为可选适配层，默认使用不需要配置 MCP。remote-mng 本身不内置模型，也不替代项目的构建脚本和业务验证规则。
 
-仓库已公开，**[v0.6.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.6.0)** 已提供 Windows 和 Linux/WSL 单文件离线安装器。真实首装、重复运行及官方 0.5 升级已通过，具体来源与平台边界见 [0.6 验收记录](docs/v06-validation.md)。
+仓库已公开，当前版本为 **[v0.7.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.7.0)**，提供 Windows 和 Linux/WSL 单文件离线安装器。本版新增可配置、可接管的开发者控制台，继续面向个人试用；功能、安装升级和验证边界见 [0.7 发布说明](docs/releases/v0.7.0.md)。
 
 ## 它解决什么问题
 
@@ -17,7 +17,7 @@
 | 网络断开后不知道长任务是否完成 | Linux helper 在远端保存受管作业状态、退出码和日志，重连后查询原 job ID |
 | 交互命令超时，Agent 容易重复发送 | 将一次输入与请求 ID 关联，超时后继续观察原请求；不因未等到提示符自动重发 |
 | 批量传文件失败后需要恢复 | SFTP 目录清单、SHA-256 验证、冲突策略和文件级恢复；提供遗留 SCP 兼容路径 |
-| 开发者不知道 Agent 卡在哪 | 本地控制台集中显示设备、步骤、会话、日志、待确认事项及适用的管理操作 |
+| 开发者配置和排障都依赖 Agent | 网页直接管理设备、凭据引用和交互模板，显示执行证据，并提供明确的会话接管与归还 |
 | 经常迭代，程序和 Skill 容易不同步 | 统一更新入口固定版本和摘要，保留更新记录，核对组件状态，提供兼容回退和失败恢复 |
 
 例如，“文件已上传”“Shell 退出码为 0”“测试输出符合成功规则”是三种不同证据。remote-mng 保留这些证据，不把提示符出现或连接断开自动判定成业务成功。重复提交保护只覆盖对应的受管步骤和请求，不能保证任意业务命令天然幂等。
@@ -30,12 +30,12 @@
 
 | 本机系统 | 离线安装包 | 怎么安装 |
 | --- | --- | --- |
-| Windows x86_64 | [下载安装 EXE](https://github.com/LX-Cel/remote-mng/releases/download/v0.6.0/remote-mng-0.6.0-windows-x86_64-setup.exe) | 双击运行 |
-| Linux / WSL x86_64 | [下载安装 RUN](https://github.com/LX-Cel/remote-mng/releases/download/v0.6.0/remote-mng-0.6.0-linux-x86_64-setup.run) | 赋予执行权限后运行，见下方两行命令 |
+| Windows x86_64 | [下载安装 EXE](https://github.com/LX-Cel/remote-mng/releases/download/v0.7.0/remote-mng-0.7.0-windows-x86_64-setup.exe) | 双击运行 |
+| Linux / WSL x86_64 | [下载安装 RUN](https://github.com/LX-Cel/remote-mng/releases/download/v0.7.0/remote-mng-0.7.0-linux-x86_64-setup.run) | 赋予执行权限后运行，见下方两行命令 |
 
 ```sh
-chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
-./remote-mng-0.6.0-linux-x86_64-setup.run
+chmod +x ./remote-mng-0.7.0-linux-x86_64-setup.run
+./remote-mng-0.7.0-linux-x86_64-setup.run
 ```
 
 安装器默认安装到个人目录、安装 Skill 并启动本地管理器，不需要管理员权限，也不改全局 PATH。安装成功后会显示实际结果；遇到活动任务或配置冲突时说明原因。**离线更新同样只需带入并运行新版安装包**，已有任务和个人配置会保留。重新运行旧安装包不会获取新版。
@@ -49,7 +49,9 @@ chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
 
 </details>
 
-### 开始第一次任务
+### 配置设备并开始第一次任务
+
+可以先打开控制台，在“设备”添加 SSH/Telnet 连接、预览并保存配置，再测试连接。无需先向 Agent 描述配置参数。Windows 双击安装目录的 `bin/Open remote-mng.cmd`，Linux / WSL 运行 `bin/open-console.sh`；详细流程见 [开发者控制台指南](docs/console.md)。
 
 安装完成后，在业务项目目录开启**新的 Claude Code 会话**，让它加载已安装的 Skill。个人 Skill 默认位于 `~/.claude/skills/remote-mng/`，设置了 `CLAUDE_CONFIG_DIR` 时使用该配置目录。它可供同一环境下的多个业务项目使用。Skill 加载机制见 [Claude Code 官方说明](https://code.claude.com/docs/en/skills)。
 
@@ -57,7 +59,7 @@ chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
 
 > 使用 remote-mng，检查本地安装和已经配置的设备，打开状态控制台，告诉我有哪些条件尚未满足。
 
-首次添加设备时，提供目标别名、地址和端口、用户名、密钥文件路径或口令环境变量名，并按 [连接指南](docs/transports.md) 核验 SSH 主机密钥。不要在对话中粘贴密码或私钥内容。传包路径、部署脚本和成功规则由你的项目提供。
+也可以让 Agent 添加设备，提供目标别名、地址和端口、用户名、密钥文件路径或口令环境变量名，并按 [连接指南](docs/transports.md) 核验 SSH 主机密钥。临时密码在控制台输入，不要在对话中粘贴密码或私钥内容。传包路径、部署脚本和成功规则由你的项目提供。
 
 配置完成后，可以这样安排任务：
 
@@ -69,22 +71,29 @@ chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
 
 也可以用 `/remote-mng` 显式调用 Skill。交互前台需要提供真实的进入命令、提示符、退出方式及成功判据；工具不内置 CTP 或某个厂商的专用命令。可复制 [项目配方模板](examples/rmg-project.json) 保存本项目流程，再按 [个人试用指南](docs/personal-trial.md) 逐步验证。
 
-## 开发者怎样查看状态
+## 开发者怎样配置、查看和接管
 
-直接告诉 Claude：“打开 remote-mng 控制台。”Agent 调用 `rmg ui`，网页展示设备检查、个人任务、步骤证据、会话与操作、日志，以及组件版本和更新历史。远端检查和任务刷新由明确操作触发，不把本地缓存当作实时远端状态。
+直接告诉 Claude：“打开 remote-mng 控制台。”Agent 调用 `rmg ui`。控制台提供总览、设备、任务、会话和设置，你可以直接管理环境、运行保存的常用操作、接管交互调试；Agent 继续使用同一份配置与任务记录。远端检查和任务刷新由明确操作触发，不把本地缓存当作实时远端状态。
 
 独立包还提供固定入口：Windows 双击安装目录的 `bin/Open remote-mng.cmd`；Linux / WSL 使用 `bin/open-console.sh`。电脑重启后也可从这里启动管理器并打开页面。网页与本地 RPC 只监听 loopback，访问链接包含本机访问凭证，不应分享到公共文档。
 
-网页是个人状态和管理入口，不是完整终端模拟器。当前不提供团队账号、多人协作调度或远程开放的管理后台。
+- **设备**：新增、编辑、复制和删除 SSH/Telnet 配置，设置私钥、环境变量或临时凭据引用；测试连接、核对 SSH 主机指纹，明确安装 Helper 或预览日志清理。
+- **任务**：查看实际提交参数、命令、产物、步骤证据和输出，查询原作业、取消受管任务；执行成功与业务验证分别展示。
+- **会话**：观察实时输出，接管输入、发送一次命令、Ctrl+C、按模板退出前台、调整尺寸或关闭连接。人工接管有租约，页面关闭或租约过期不会让 Agent 自动恢复输入，需明确归还控制权。
+- **设置**：管理进入/退出前台的交互模板、经过确认的固定命令操作、临时凭据、本地日志配额、配置导入导出与备份恢复。配置变更先预览差异，并检查版本冲突。
+
+临时凭据只存在于本地管理器内存，重启后需要重新输入；导出只包含引用。已有会话、未结束任务或已记录远端作业会阻止设备身份被悄悄改指另一台设备，应为新设备创建新名称。常用操作运行前展示目标和命令，重复查询同一请求不会重新提交。
+
+详细流程与边界见 [开发者控制台指南](docs/console.md)。当前不提供团队账号、多人协作调度、完整终端模拟器或远程开放的管理后台。
 
 ## 原理与远端 helper
 
 ```mermaid
 flowchart LR
-    Developer["开发者：自然语言"] --> Agent["Claude Code + Skill"]
+    Developer["开发者"] -->|自然语言| Agent["Claude Code + Skill"]
     Agent --> CLI["rmg CLI：结构化请求与结果"]
     CLI --> Manager["本地管理器：连接、任务、日志"]
-    Developer -. "查看与管理" .-> Web["本地网页"]
+    Developer -->|配置、查看、执行与接管| Web["本地网页"]
     Web --> Manager
     Manager --> Shell["SSH / Telnet：Shell 与交互前台"]
     Manager --> Transfer["SSH 文件通道：SFTP / SCP"]
@@ -105,7 +114,7 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 
 在线安装则按保存的正式或预览通道查询 GitHub，支持让 Agent 更新，或重跑在线脚本。活动前台、正在执行的操作、Skill 本地修改或兼容性不明会阻止切换；安装器不为了更新强行关闭它们。0.3 等旧版缺少安全更新协议，正在运行的旧管理器会明确阻碍迁移，先让 Agent 核对活动和作业 ID，在你允许普通前台断开后处理。详情见 [更新与恢复](docs/updates.md)。
 
-独立安装保留兼容版本供回退；受支持的 uv 在线更新在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。各平台实际验证范围见 [0.6 验收记录](docs/v06-validation.md)。
+独立安装保留兼容版本供回退；受支持的 uv 在线更新在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。**0.7 的临时凭据引用需要新版程序；配置含这些字段时会阻止回退到不认识它们的旧版本。** 先审查并恢复兼容配置，不会为回退自动删除你的设置。当前验证范围见 [0.7 发布说明](docs/releases/v0.7.0.md)。
 
 个人部署规范可以保存在 `~/.claude/remote-mng/USER.md`，自定义 Claude 配置目录时跟随该目录。安装、升级和卸载都不修改这个文件；不要直接修改托管的 `skills/remote-mng` 目录。已存在的用户修改会被保护并报告冲突，不能靠强制覆盖跳过。
 
@@ -128,7 +137,9 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 | 操作交互前台和同一 Shell | [Agent 操作约定](docs/agent-guide.md) · [Shell 命令](docs/shell-v03.md) |
 | 管理远端长任务、日志和空间 | [helper 存储与维护](docs/helper-storage-v03.md) |
 | 查看更新状态、回退和失败恢复 | [更新指南](docs/updates.md) |
-| 了解原理和已验证边界 | [0.6 验收记录](docs/v06-validation.md) · [交互原理演示](docs/explainer-v02.html) · [0.5 历史记录](docs/v05-validation.md) |
+| 在网页配置、管理和接管 | [开发者控制台指南](docs/console.md) |
+| 了解当前版本和验证边界 | [0.7 发布说明](docs/releases/v0.7.0.md) · [0.6 历史验收](docs/v06-validation.md) |
+| 了解原理和历史演示 | [交互原理演示](docs/explainer-v02.html) · [0.5 历史记录](docs/v05-validation.md) |
 
 版本命名的历史文档记录当时的范围，不代表新版验证已完成。Agent 的完整参数可从 `rmg schema --json` 和各命令的 `--help` 获取；`python -m remote_mng` 与 `rmg` 使用同一入口。
 
@@ -151,7 +162,7 @@ uv run --frozen python scripts/build_release.py
 uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json
 ```
 
-[发布流水线](.github/workflows/release.yml) 验证真实旧版的分发升级/回退、单文件离线首装与重复安装，以及独立更新进程和 uv 离线恢复。0.6 的 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/39557186165) 全部通过；[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/39557187489) 的 Ubuntu 22.04 全部通过，Windows 受宿主进程限制等条件未通过。预发布的 Windows 包来自同源码的本机构建并通过真实离线安装、官方 0.5 升级及分发回退，未使用失败的 Windows CI 包；后台更新限制仍保留，详见 [验收与来源](docs/v06-validation.md)。正式自动发布门槛未放宽，安全阻碍不算安装成功。
+[发布流水线](.github/workflows/release.yml) 验证真实旧版的分发升级/回退、单文件离线首装与重复安装，以及独立更新进程和 uv 离线恢复。0.7 发布前的本地测试包括 Windows 910 项通过、Linux/WSL 923 项通过，以及真实回环 SSH/Telnet、浏览器操作、原生离线首装与 0.6→0.7 升级；它们不等同于真实公司设备或专用测试软件已兼容。发行制品的构建平台、摘要和验证结果以随包清单及相应 Release 为准，CI 门槛不会因本地通过而自动视为通过。0.6 的历史来源与已知宿主限制保留在 [0.6 验收记录](docs/v06-validation.md)。
 
 ## 许可证
 

@@ -33,6 +33,7 @@ _DEFINITE_REJECTIONS = frozenset({
     "host_key_untrusted", "authentication_failed", "target_not_found", "profile_not_found",
     "shell_confirmation_required", "shell_not_ready", "shell_command_pending", "insufficient_space",
     "helper_upgrade_required",
+    "developer_control", "developer_control_required", "control_expired",
 })
 
 
@@ -136,7 +137,7 @@ class TaskBook:
             return text if len(text) <= 16384 else text[:16384] + "[TRUNCATED]"
         return value
 
-    def create(self, id, title, target, artifact=None):
+    def create(self, id, title, target, artifact=None, plan=None):
         _identifier(id, "Task id")
         if not isinstance(title, str) or not title.strip() or len(title) > 512:
             raise RemoteError("invalid_task", "A task title of 1..512 characters is required")
@@ -144,8 +145,18 @@ class TaskBook:
             raise RemoteError("invalid_task", "A target alias is required")
         if artifact is not None and not isinstance(artifact, (str, dict)):
             raise RemoteError("invalid_task", "Artifact must be a path or metadata object")
+        if plan is not None:
+            if not isinstance(plan, list) or len(plan) > 200:
+                raise RemoteError("invalid_task", "A proposed plan must be a list of at most 200 steps")
+            for step in plan:
+                if (not isinstance(step, dict) or set(step) - {"label", "method", "params"}
+                        or step.get("method") not in ALLOWED_METHODS
+                        or not isinstance(step.get("params", {}), dict)
+                        or ("label" in step and (not isinstance(step["label"], str) or len(step["label"]) > 512))):
+                    raise RemoteError("invalid_task", "Plan steps need a supported method, parameter object and optional label")
         try:
-            fingerprint = hashlib.sha256(_json([title, target, artifact]).encode()).hexdigest()
+            intent = [title, target, artifact] + ([plan] if plan is not None else [])
+            fingerprint = hashlib.sha256(_json(intent).encode()).hexdigest()
         except (TypeError, ValueError) as exc:
             raise RemoteError("invalid_task", "Task metadata must be JSON serializable") from exc
         old = self.db.execute("SELECT data FROM taskbook_tasks WHERE id=?", (id,)).fetchone()
@@ -153,11 +164,20 @@ class TaskBook:
             if json.loads(old[0])["_fingerprint"] != fingerprint:
                 raise RemoteError("task_conflict", "Task id is already bound to different metadata", {"task_id": id})
             return self._view(id)
-        safe = self._safe({"title": title, "artifact": artifact}, self._redactor(target, {"artifact": artifact}))
+        from .core import REQUEST_SOURCE
+        safe = self._safe({"title": title, "artifact": artifact, "plan": plan},
+                          self._redactor(target, {"artifact": artifact, "plan": plan}))
+        metadata = {"source": REQUEST_SOURCE.get()}
+        if plan is not None:
+            metadata["plan"] = safe["plan"]
+        try:
+            metadata["config_revision"] = self.manager.config.snapshot(target)["revision"]
+        except (AttributeError, RemoteError):
+            pass
         now = time.time()
         self._save_task({"id": id, "title": safe["title"], "target": target, "artifact": safe["artifact"],
                          "created_at": now, "updated_at": now, "sealed": False, "cancel_requested": False,
-                         "_fingerprint": fingerprint})
+                         "_fingerprint": fingerprint, **metadata})
         return self._view(id)
 
     def list(self, limit=100):
@@ -413,7 +433,9 @@ class TaskBook:
             params["job_id"] = (retry_previous["resource"]["job_id"] if retry_previous else uuid.uuid4().hex)
         redactor = self._redactor(task["target"], params)
         now = time.time()
+        from .core import REQUEST_SOURCE
         step = {"id": request_id, "label": redactor.clean(label or method), "method": method,
+                "source": REQUEST_SOURCE.get(),
                 "state": "dispatching", "created_at": retry_previous["created_at"] if retry_previous else now,
                 "attempt_count": retry_previous.get("attempt_count", 1) + 1 if retry_previous else 1,
                 "observed_at": None,

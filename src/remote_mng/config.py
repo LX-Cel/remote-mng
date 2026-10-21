@@ -23,6 +23,8 @@ class Target(BaseModel):
     username: str | None = None
     password_env: str | None = None
     passphrase_env: str | None = None
+    password_ref: str | None = None
+    passphrase_ref: str | None = None
     client_keys: list[str] | None = None
     known_hosts: str | None = None
     ssh_config: list[str] | None = None
@@ -55,6 +57,13 @@ class Target(BaseModel):
         for reference in (self.password_env, self.passphrase_env):
             if reference is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", reference):
                 raise ValueError("Credentials must use environment variable names")
+        from .credentials import valid_reference
+        for field in ("password", "passphrase"):
+            reference = getattr(self, field + "_ref")
+            if reference is not None and not valid_reference(reference):
+                raise ValueError("Temporary credentials require a valid memory reference")
+            if reference and getattr(self, field + "_env"):
+                raise ValueError("Choose one credential source for each field")
         from .connection_routes import validate_routes, validate_login
         try:
             validate_routes(self.model_dump(exclude_none=True))
@@ -62,10 +71,10 @@ class Target(BaseModel):
         except Exception as exc:
             raise ValueError("Invalid connection route or login flow") from exc
         for step in self.login_steps:
-            if set(step) - {"expect", "send", "send_env", "newline", "timeout"}:
+            if set(step) - {"expect", "send", "send_env", "send_ref", "newline", "timeout"}:
                 raise ValueError("Unsupported login step field")
-            if "send" in step and "send_env" in step:
-                raise ValueError("Use send OR send_env in a login step")
+            if sum(key in step for key in ("send", "send_env", "send_ref")) > 1:
+                raise ValueError("Choose one login input source")
             if not isinstance(step.get("expect"), str) or not step["expect"]:
                 raise ValueError("Each login step requires an expect pattern")
             re.compile(step["expect"])
@@ -82,6 +91,12 @@ class Target(BaseModel):
             base["protocol"] = "ssh"
             Target.model_validate(base)
         return self
+
+
+class ConsoleSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    local_log_max_bytes: int = Field(default=64 * 1024 * 1024, ge=4096, le=1024 * 1024 * 1024)
+    default_timeout: float = Field(default=30, ge=5, le=60)
 
 
 def home_path(home: str | Path | None = None) -> Path:
@@ -101,11 +116,61 @@ def atomic_json(path: Path, data: dict) -> None:
     temp.replace(path)
 
 
+def ensure_config_compatible(home, version):
+    """Reject a program downgrade which cannot read saved credential references.
+
+    Compatibility is checked without deleting fields, resolving secrets or
+    rolling back the developer's configuration as a side effect.
+    """
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        return
+    if tuple(map(int, version.split("."))) >= (0, 7, 0):
+        return
+    root = Path(home or os.environ.get("RMG_HOME") or Path.home() / ".remote-mng").expanduser()
+    path = root / "config.json"
+    if not path.is_file():
+        return
+    try:
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
+        targets = document.get("targets", {})
+    except (ValueError, OSError, AttributeError):
+        raise RemoteError("config_version_incompatible", "The saved configuration could not be checked before changing versions") from None
+    fields = []
+    def visit(value, prefix):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                location = prefix + "." + key
+                if key in {"password_ref", "passphrase_ref", "username_ref", "send_ref"}:
+                    fields.append(location)
+                elif isinstance(item, (dict, list)):
+                    visit(item, location)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, prefix + "." + str(index))
+    visit(targets, "targets")
+    if fields:
+        raise RemoteError("config_version_incompatible",
+                          "Saved credential references require remote-mng 0.7.0 or later; review and restore a compatible configuration before selecting an older program",
+                          {"selected_version": version, "minimum_version": "0.7.0", "fields": fields[:100],
+                           "configuration_changed": False})
+
+
 class Config:
     def __init__(self, home=None):
         self.home = home_path(home)
         self.path = self.home / "config.json"
         self.lock = FileLock(str(self.home / "config.lock"))
+        self.extra_validators = {}
+        self.mutation_guard = None
+        self.mutation_audit = None
+
+    def _guard(self, name, before, after):
+        if self.mutation_guard:
+            self.mutation_guard(name, before, after)
+
+    def _audit(self, action, name, before, after, revision):
+        if self.mutation_audit:
+            self.mutation_audit(action, name, before, after, revision)
 
     def read(self):
         if not self.path.exists():
@@ -130,8 +195,11 @@ class Config:
         data["port"] = target.port or (22 if target.protocol == "ssh" else 23)
         with self.lock:
             settings = self.read()
+            before = settings.get("targets", {}).get(name)
+            self._guard(name, before, data)
             settings.setdefault("targets", {})[name] = data
             atomic_json(self.path, settings)
+            self._audit("target.put", name, before, data, self._revision(settings))
         return {"name": name, "config": data}
 
     def remove(self, name):
@@ -139,8 +207,11 @@ class Config:
             settings = self.read()
             if name not in settings.get("targets", {}):
                 raise RemoteError("target_not_found", f"Unknown target: {name}")
+            before = settings["targets"][name]
+            self._guard(name, before, None)
             del settings["targets"][name]
             atomic_json(self.path, settings)
+            self._audit("target.remove", name, before, None, self._revision(settings))
         return {"name": name, "removed": True}
 
     @staticmethod
@@ -184,6 +255,7 @@ class Config:
             diff = [{"field": key, "before": before.get(key), "after": after.get(key)}
                     for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]
             result = {"name": name, "revision": revision, "dry_run": dry_run, "diff": diff, "config": after}
+            self._guard(name, before, after)
             if not dry_run and diff:
                 backup_dir = self.home / "config-backups"
                 backup_dir.mkdir(mode=0o700, exist_ok=True)
@@ -192,6 +264,7 @@ class Config:
                 settings["targets"][name] = after
                 atomic_json(self.path, settings)
                 result.update({"revision": self._revision(settings), "backup_path": str(backup)})
+                self._audit("target.patch", name, before, after, result["revision"])
             return result
 
     def target(self, name, action=None):

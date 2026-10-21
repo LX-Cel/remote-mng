@@ -76,17 +76,20 @@
     $("notice").hidden = !message;
   };
 
-  async function api(path, method = "GET", body = {}) {
+  async function api(path, method = "GET", body = {}, extraHeaders = {}, keepalive = false) {
     if (!token) throw new Error("控制台尚未解锁。请让 Agent 运行 rmg ui，使用返回的本地链接打开控制台。");
     const response = await fetch("/ui/api/" + path, {
-      method, cache: "no-store", credentials: "omit",
-      headers: {Authorization: "Bearer " + token, ...(method === "POST" ? {"Content-Type": "application/json"} : {})},
+      method, cache: "no-store", credentials: "omit", keepalive,
+      headers: {Authorization: "Bearer " + token, ...extraHeaders, ...(method === "POST" ? {"Content-Type": "application/json"} : {})},
       ...(method === "POST" ? {body: JSON.stringify(body)} : {}),
     });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
       if (response.status === 401) throw new Error("访问凭据已失效。管理器重启后，请使用 Agent 提供的新控制台链接。");
-      throw new Error(payload.error?.message || "暂时无法读取状态，请稍后重试。");
+      const error = new Error(payload.error?.message || "暂时无法读取状态，请稍后重试。");
+      error.code = payload.error?.code;
+      error.details = payload.error?.details;
+      throw error;
     }
     return payload.result;
   }
@@ -278,8 +281,12 @@
       if (item.advice) card.append(el("p", item.advice, "advice"));
       if (item.evidence) card.append(evidence(item.evidence));
       if (item.task_id) card.append(button("查看任务", async () => {
+        if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:navigate", {detail: "tasks"}));
         selectedTask = item.task_id; renderTasks(snapshot.tasks); await refreshTask();
         $("task-detail").scrollIntoView({behavior: "smooth", block: "nearest"});
+      }));
+      if (item.target) card.append(button("检查设备配置", () => {
+        if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:edit-target", {detail: item.target}));
       }));
       const prompt = `请使用 remote-mng 检查${item.task_id ? "任务 " + item.task_id : "设备 " + item.target}的最新状态。先读取故障阶段与证据，结果未知时查询原任务，不重发业务命令。说明修复依据并继续已授权的工作。`;
       card.append(button("复制给 Agent", async () => {
@@ -294,7 +301,7 @@
     if (!changed("targets", [targets, [...busyTargets]])) return;
     const container = $("targets");
     container.replaceChildren();
-    if (!targets.length) container.append(empty("还没有配置设备。告诉 Agent 目标地址、连接方式和认证引用后，即可开始。"));
+    if (!targets.length) container.append(empty("还没有配置设备。进入“设备”页面，添加 SSH 或 Telnet 连接。"));
     for (const target of targets) {
       const check = target.inspection || target.last_check;
       const card = el("article", null, "target-card");
@@ -379,9 +386,16 @@
     addFact(facts, "任务状态", stateName(task.state));
     addFact(facts, "目标设备", task.target);
     addFact(facts, "产物", task.artifact);
+    addFact(facts, "提交来源", task.source);
+    addFact(facts, "配置版本", task.config_revision);
     addFact(facts, "记录更新", stamp(task.updated_at));
     addFact(facts, "步骤提交", task.sealed ? "已结束步骤提交" : "Agent 可继续添加步骤");
     container.append(facts);
+    if (task.plan?.length) {
+      const plan = el("details");
+      plan.append(el("summary", "预期执行计划（提交者声明）", "small"), el("p", "此处是提交时声明的计划。实际执行参数和结果以下方步骤记录为准。", "small"), el("pre", JSON.stringify(task.plan, null, 2)));
+      container.append(plan);
+    }
     container.append(el("p", "“步骤完成”表示工具记录的操作已完成；业务测试是否通过，需要查看测试输出与明确的成功判据。断线后的未知状态需要重新查询。", "advice"));
     const timeline = el("ol", null, "timeline");
     for (const step of task.steps || []) {
@@ -394,6 +408,14 @@
       }
       if (step.error) item.append(el("pre", `${step.error.code || "错误"}: ${step.error.message || JSON.stringify(step.error)}`));
       if (step.error?.details?.diagnostic) item.append(evidence(step.error.details.diagnostic));
+      const parameters = step.parameters || step.params;
+      if (parameters) {
+        const plan = el("details");
+        plan.append(el("summary", "实际提交参数与命令", "small"), el("pre", JSON.stringify(parameters, null, 2)));
+        item.append(plan);
+      }
+      if (step.source) item.append(el("p", "提交来源 · " + (typeof step.source === "string" ? step.source : JSON.stringify(step.source)), "small"));
+      if (step.outcome || step.phase) item.append(el("p", `执行依据 · ${step.outcome || step.phase}。输入已发送与业务验证通过是不同状态。`, "small"));
       const details = step.result || step.observation;
       if (details?.logs_draining || details?.result?.logs_draining) {
         const status = details.result || details;
@@ -497,6 +519,7 @@
       renderTasks(snapshot.tasks);
       renderActivities(snapshot.operations, "operations", "operation");
       renderActivities(snapshot.sessions, "sessions", "session");
+      if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:overview", {detail: snapshot}));
       await refreshTask();
       await refreshUpdates();
     } catch (error) {
@@ -507,6 +530,7 @@
   }
 
   async function chooseLog(reference, label) {
+    if (typeof CustomEvent !== "undefined") document.dispatchEvent(new CustomEvent("rmg:navigate", {detail: "tasks"}));
     selectedLog = reference;
     offset = 0;
     logGeneration += 1;
@@ -587,6 +611,8 @@
     location.reload();
   });
 
+  if (typeof window !== "undefined") window.rmgDashboard = {api, notice, refreshOverview, chooseLog, hasToken: () => Boolean(token),
+    selectTask: async (id) => { selectedTask = id; if (snapshot) renderTasks(snapshot.tasks); await refreshTask(); }};
   if (!token) {
     $("connection-state").textContent = "控制台已锁定";
     notice("请让 Agent 运行 rmg ui，使用它返回的本地链接打开控制台。链接中的访问凭据仅保留在此标签页，不会写入日志或地址栏。");

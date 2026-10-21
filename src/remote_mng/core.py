@@ -10,6 +10,7 @@ import secrets
 import shlex
 import time
 import uuid
+from contextvars import ContextVar
 
 import regex
 
@@ -18,6 +19,9 @@ from .errors import RemoteError
 from .redact import Redactor, target_secrets
 from .store import Store
 from . import transports
+
+
+REQUEST_SOURCE = ContextVar("remote_mng_request_source", default="cli_or_rpc")
 
 
 class Session:
@@ -31,8 +35,23 @@ class Session:
         self.pump = None
         self.profile = profile or {}
         self.leave_task = None
+        self.controller = "agent"
+        self.control_expires_at = None
+        self.developer_hold = False
+
+    def expire_control(self):
+        if self.control_expires_at is not None and time.time() >= self.control_expires_at:
+            self.token = None
+            self.controller = None
+            self.control_expires_at = None
+            # Losing a browser is not permission for an Agent to resume input.
+            self.developer_hold = True
+            return True
+        return False
 
     def authorize(self, token):
+        if self.expire_control():
+            raise RemoteError("control_expired", "Developer control expired; explicitly reclaim and hand back the session")
         if not token or not self.token or not secrets.compare_digest(str(token), self.token):
             raise RemoteError("control_required", "Claim this session before writing; a previous owner may have taken control")
 
@@ -50,8 +69,11 @@ class Manager:
         from .taskbook import TaskBook
         self.taskbook = TaskBook(self)
         self.step_tasks = {}
+        self.control_observers = {}
         from .session_shell import ShellCommands
         self.shell_commands = ShellCommands(self)
+        from .console_management import ConsoleManagement
+        self.console = ConsoleManagement(self)
 
     def launch(self, coro):
         task = asyncio.create_task(coro)
@@ -88,6 +110,8 @@ class Manager:
         return self.update_readiness()
 
     async def _dispatch(self, method, params=None):
+        if method in {"session.claim", "session.open"} and isinstance(params, dict) and params.get("controller", "agent") != "agent":
+            raise RemoteError("developer_control_required", "Developer ownership is only granted by the local console")
         methods = {
             "target.list": self.target_list, "target.put": self.config.put,
             "target.remove": self.config.remove, "target.check": self.target_check,
@@ -103,6 +127,7 @@ class Manager:
             "session.get": self.session_get, "session.read": self.session_read,
             "session.write": self.session_write, "session.wait": self.session_wait,
             "session.claim": self.session_claim, "session.release": self.session_release,
+            "session.heartbeat": self.session_heartbeat,
             "session.close": self.session_close, "session.resize": self.session_resize,
             "session.leave": self.session_leave,
             "session.step": self.session_step, "session.step.get": self.session_step_get,
@@ -114,6 +139,7 @@ class Manager:
             "job.status": self.job_status, "job.list": self.job_list,
             "job.logs": self.job_logs, "job.cancel": self.job_cancel,
             "job.health": self.job_health, "job.cleanup": self.job_cleanup,
+            "console.call": self.console.call,
         }
         if method not in methods:
             raise RemoteError("unknown_method", f"Unknown method: {method}")
@@ -163,7 +189,9 @@ class Manager:
 
     def new_operation(self, kind, target, **meta):
         id = uuid.uuid4().hex
-        return self.store.put({"id": id, "kind": kind, "target": target, "state": "running", **meta})
+        revision = self.config._revision(self.config.read())
+        return self.store.put({"id": id, "kind": kind, "target": target, "state": "running",
+                               "config_revision": revision, "source": REQUEST_SOURCE.get(), **meta})
 
     async def execute_operation(self, record, worker, redactor):
         id = record["id"]
@@ -204,9 +232,11 @@ class Manager:
             return " && ".join(prefix + [f"( {command}\n)"])
         return command
 
-    async def exec_start(self, target, command, cwd=None, env=None, timeout=30):
+    async def exec_start(self, target, command, cwd=None, env=None, timeout=None):
         cfg = self.config.target(target, "exec")
-        if not isinstance(timeout, (int, float)) or not 0 < timeout <= 86400:
+        if timeout is None:
+            timeout = self.config.read().get("settings", {}).get("default_timeout", 30)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 86400:
             raise RemoteError("invalid_timeout", "Timeout must be in (0, 86400] seconds")
         wrapped = self.wrap_command(cfg, command, cwd, env)
         redactor = Redactor(target_secrets(cfg))
@@ -226,11 +256,19 @@ class Manager:
             Redactor(target_secrets(cfg))))
         return record
 
-    async def session_open(self, target, command=None, profile=None):
-        cfg = self.config.target(target, "session")
+    async def session_open(self, target, command=None, profile=None, controller="agent", lease_seconds=None):
+        developer = self._validate_controller(controller)
+        lease = self._control_lease(30 if lease_seconds is None else lease_seconds) if developer else None
+        if not developer and lease_seconds is not None:
+            raise RemoteError("invalid_lease", "Only developer sessions use a control lease")
+        with self.config.lock:
+            cfg = self.config.target(target, "session")
+            opening_revision = self.config._revision(self.config.read())
+            spec = dict(self.config.profile(profile))
+            if spec:
+                spec.setdefault("timeout", self.config.read().get("settings", {}).get("default_timeout", 30))
         if len(self.sessions) + self.opening >= 32:
             raise RemoteError("session_limit", "Close an existing session before opening another (limit 32)")
-        spec = self.config.profile(profile)
         self.opening += 1
         try:
             terminal = await transports.open_terminal(cfg, command=command)
@@ -238,11 +276,18 @@ class Manager:
             self.opening -= 1
         redactor = Redactor(target_secrets(cfg))
         record = self.new_operation("session", target, command=redactor.clean(command) if command else None,
-                                    state_label=spec.get("name", "unclassified"))
+                                    state_label=spec.get("name", "unclassified"), config_revision=opening_revision)
         id = record["id"]
         self.store.update(id, state="open")
         session = Session(id, terminal, redactor, profile=spec)
+        session.controller = controller
+        session.developer_hold = developer
+        # Initial profile observation has no browser session ID to heartbeat
+        # yet. Reserve enough time, then the HTTP response begins a 30s lease.
+        if developer:
+            session.control_expires_at = time.time() + lease + spec.get("timeout", 0)
         self.sessions[id] = session
+        self._record_control(session)
         initial = getattr(terminal, "initial_output", "")
         if initial:
             self.store.append(id, session.redactor.feed(initial))
@@ -287,19 +332,29 @@ class Manager:
             session.changed.set()
 
     def session_list(self):
-        return self.store.list("session")
+        return [self.session_get(record["id"]) for record in self.store.list("session")]
 
     def session_get(self, id):
         record = self.store.get(id)
         if record["kind"] != "session":
             raise RemoteError("not_a_session", "This ID does not identify a session")
-        return {**record, "controlled": bool(self.sessions.get(id) and self.sessions[id].token),
+        session = self.sessions.get(id)
+        if session:
+            if session.expire_control():
+                self._record_control(session, "expired")
+            record = self.store.get(id)
+        else:
+            record.update(controller=None, control_state="unavailable", control_expires_at=None)
+        return {**record, "controlled": bool(session and session.token),
+                "profile": session.redactor.structured(session.profile) if session else record.get("profile", {}),
                 "cursor": self.store.size(id)}
 
     def live_session(self, id):
         session = self.sessions.get(id)
         if not session or self.store.get(id)["state"] != "open":
             raise RemoteError("session_disconnected", "The original terminal is no longer connected; open a new session")
+        if session.expire_control():
+            self._record_control(session, "expired")
         return session
 
     def session_read(self, id, offset=0, limit=65536):
@@ -333,12 +388,17 @@ class Manager:
         before = self.store.size(session.id)
         self.store.update(session.id, state_label="unknown",
                           input_generation=record.get("input_generation", 0) + 1,
-                          last_input_cursor=before)
+                          last_input_cursor=before, last_input_source=session.controller)
+        self._control_event(session, "input", input="[REDACTED]" if sensitive else session.redactor.clean(data),
+                            sensitive=sensitive, newline=newline, cursor=before)
         await session.terminal.write(data + ("\n" if newline else ""))
         return before
 
     async def session_shell_enable(self, id, control_token, confirm_posix=False, timeout=10):
-        return await self.shell_commands.enable(id, control_token, confirm_posix, timeout)
+        task = self.launch(self.shell_commands.enable(id, control_token, confirm_posix, timeout))
+        self.control_observers[task] = id
+        task.add_done_callback(lambda completed: self.control_observers.pop(completed, None))
+        return await asyncio.shield(task)
 
     async def session_exec(self, id, command, control_token, request_id, timeout=30, sensitive=False):
         return await self.shell_commands.execute(id, command, control_token, request_id, timeout, sensitive)
@@ -552,24 +612,100 @@ class Manager:
                                      outcome="unknown" if attempted else "not_sent", error=error,
                                      reason="input_or_observation_error")
 
-    async def session_claim(self, id, force=False):
+    def _control_event(self, session, action, **details):
+        self.store.put({"id": uuid.uuid4().hex, "kind": "console_audit", "action": "session." + action,
+                        "target": self.store.get(session.id).get("target"), "session_id": session.id,
+                        "source": session.controller or "unclaimed", "state": "recorded", **details})
+
+    def _record_control(self, session, action=None):
+        changed = {}
+        if action or "control_changed_at" not in self.store.get(session.id):
+            changed["control_changed_at"] = time.time()
+        self.store.update(session.id, controller=session.controller,
+                          control_state="owned" if session.token else
+                          "developer_hold" if session.developer_hold else "unclaimed",
+                          control_expires_at=session.control_expires_at,
+                          profile=session.redactor.structured(session.profile), **changed)
+        if action:
+            self._control_event(session, action)
+
+    @staticmethod
+    def _validate_controller(controller):
+        if (not isinstance(controller, str) or not regex.fullmatch(r"agent|developer:[A-Za-z0-9_-]{16,128}", controller)):
+            raise RemoteError("invalid_controller", "Use agent or a developer controller identifier")
+        return controller.startswith("developer:")
+
+    @staticmethod
+    def _control_lease(lease_seconds):
+        if (isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float))
+                or not 5 <= lease_seconds <= 120):
+            raise RemoteError("invalid_lease", "Developer control leases must be 5..120 seconds")
+        return float(lease_seconds)
+
+    async def session_claim(self, id, force=False, controller="agent", lease_seconds=None):
+        if not isinstance(force, bool):
+            raise RemoteError("invalid_params", "force must be a boolean")
+        developer = self._validate_controller(controller)
+        lease = self._control_lease(30 if lease_seconds is None else lease_seconds) if developer else None
+        if not developer and lease_seconds is not None:
+            raise RemoteError("invalid_lease", "A lease is only used for developer control")
         session = self.live_session(id)
+        if not developer and (session.developer_hold or (session.controller or "").startswith("developer:")):
+            raise RemoteError("developer_control", "The developer must explicitly hand this session back before CLI input can resume")
+        if developer and force:
+            # Stop the local observer, never send an interrupt or replay input.
+            # session.step holds the input lock during its bounded observation.
+            observers = [task for key, task in self.step_tasks.items()
+                         if self.store.get(key).get("session_id") == id and not task.done()]
+            observers += [task for task, session_id in self.control_observers.items()
+                          if session_id == id and not task.done()]
+            if session.leave_task and not session.leave_task.done():
+                observers.append(session.leave_task)
+            for task in observers:
+                task.cancel()
+            if observers:
+                await asyncio.gather(*observers, return_exceptions=True)
         async with session.lock:
             self.live_session(id)
+            if not developer and (session.developer_hold or (session.controller or "").startswith("developer:")):
+                raise RemoteError("developer_control", "The developer must explicitly hand this session back")
             if session.token and not force:
                 raise RemoteError("session_busy", "Another controller owns this session; explicit takeover required")
             session.token = "rmg_" + secrets.token_urlsafe(32)
-            self.store.update(id, control_changed_at=time.time())
-            return {"id": id, "control_token": session.token, "cursor": self.store.size(id)}
+            session.controller = controller
+            session.control_expires_at = time.time() + lease if developer else None
+            session.developer_hold = developer
+            self._record_control(session, "claim")
+            return {**self.session_get(id), "control_token": session.token}
 
-    async def session_release(self, id, control_token):
+    async def session_heartbeat(self, id, control_token, lease_seconds=30):
+        lease = self._control_lease(lease_seconds)
+        session = self.live_session(id)
+        # No await or terminal input: atomic on the manager's event loop. A
+        # long prompt observation must not block renewal of its own lease.
+        session.authorize(control_token)
+        if not (session.controller or "").startswith("developer:"):
+            raise RemoteError("invalid_controller", "Only a developer lease needs a heartbeat")
+        session.control_expires_at = time.time() + lease
+        self._record_control(session)
+        return {"id": id, "controller": session.controller, "control_state": "owned",
+                "control_expires_at": session.control_expires_at}
+
+    async def session_release(self, id, control_token, resume=True):
+        if not isinstance(resume, bool):
+            raise RemoteError("invalid_params", "resume must be a boolean")
         session = self.sessions.get(id)
         if not session:
             raise RemoteError("session_disconnected", "No live session")
         async with session.lock:
             session.authorize(control_token)
+            self._control_event(session, "release" if resume else "abandon")
             session.token = None
-        return {"id": id, "released": True}
+            session.controller = None
+            session.control_expires_at = None
+            session.developer_hold = not resume
+            self._record_control(session)
+        return {"id": id, "released": True, "control_state": "unclaimed" if resume else "developer_hold"}
 
     async def session_close(self, id, control_token):
         session = self.sessions.get(id)
@@ -584,6 +720,7 @@ class Manager:
             raise RemoteError("session_disconnected", "No live session")
         async with session.lock:
             session.authorize(control_token)
+            self._control_event(session, "close")
             self.store.update(id, state="closed")
             await session.terminal.close()
             if session.pump and not session.pump.done():
@@ -758,4 +895,5 @@ class Manager:
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.console.close()
         self.store.close()

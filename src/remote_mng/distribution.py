@@ -555,6 +555,8 @@ async def setup(home=None, claude_dir=None, *, binding=None, start_daemon=False)
 
 
 async def _activate(root, directory, manifest, home, claude_dir, health, source=None):
+    from .config import ensure_config_compatible
+    ensure_config_compatible(home, manifest["version"])
     before = installation_status(root)
     binding = _launchers(root, home)
     if os.name == "nt":
@@ -741,11 +743,13 @@ async def prepare_artifact(archive, sha256, *, install_dir=None, home=None, clau
 async def prepare_rollback(version=None, *, install_dir=None, home=None, claude_dir=None):
     """Probe a compatible retained version before the caller stops its manager."""
     root = _root(install_dir)
-    _selected_context(root, home, claude_dir)
+    home, claude_dir = _selected_context(root, home, claude_dir)
     try:
         with _prepare(root):
             status = installation_status(root)
             selected = _version(version or status["previous_version"])
+            from .config import ensure_config_compatible
+            ensure_config_compatible(home, selected)
             directory = root / "versions" / selected
             manifest = _manifest(directory)
             if manifest["version"] != selected or manifest["platform"] != platform_tag():

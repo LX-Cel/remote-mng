@@ -162,8 +162,24 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("target", nargs="?")
     doctor.add_argument("--directory", help="Existing remote directory to check for write access")
     doctor.add_argument("--claude-dir")
-    ui = _sub(groups, "ui", "Open the personal local status console")
+    ui = _sub(groups, "ui", "Open the local developer management console")
     ui.add_argument("--no-open", action="store_true", help="Return the local URL without launching a browser")
+    templates = _sub(groups, "template", "Use reviewed operation templates shared with the developer console")
+    template_commands = templates.add_subparsers(dest="action", required=True)
+    _sub(template_commands, "list", "List configured operations and the configuration revision without connecting")
+    template_get = _sub(template_commands, "get", "Read a named operation without executing it")
+    template_get.add_argument("name")
+    template_run = _sub(template_commands, "run", "Preview or submit one reviewed operation as a durable task")
+    template_run.add_argument("name")
+    template_run.add_argument("--target", required=True)
+    template_run.add_argument("--request-id", required=True, help="Stable identifier; reuse after an uncertain response")
+    template_run.add_argument("--revision", required=True, help="Configuration revision returned by list/get")
+    template_run.add_argument("--apply", action="store_true", help="Submit the exact reviewed operation; default is preview only")
+    profile = _sub(groups, "profile", "Read interactive profiles configured in the developer console")
+    profile_commands = profile.add_subparsers(dest="action", required=True)
+    _sub(profile_commands, "list", "List saved interactive profiles without connecting")
+    profile_get = _sub(profile_commands, "get", "Read a saved interactive profile")
+    profile_get.add_argument("name")
     project = _sub(groups, "project", "Read a personal project recipe without executing it")
     projects = project.add_subparsers(dest="action", required=True)
     project_inspect = _sub(projects, "inspect", "Validate input files and show the explicit operation plan")
@@ -175,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--title", required=True)
     create.add_argument("--target", required=True)
     create.add_argument("--artifact-file", help="Optional local artifact; record its name, size and SHA-256")
+    create.add_argument("--plan-file", help="Optional proposed step list as JSON; displayed in the console, never auto-executed")
     listed = _sub(tasks, "list", "List recent personal tasks without remote polling")
     listed.add_argument("--limit", type=int, default=100)
     for action in ("get", "seal", "cancel", "invoke"):
@@ -277,6 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     opened.add_argument("target")
     opened.add_argument("--command", help="Optional program to start in the remote terminal")
     opened.add_argument("--profile-file", help="JSON interaction profile, or '-' for stdin")
+    opened.add_argument("--profile", help="Named interactive profile configured in the developer console")
     _sub(sessions, "list", "List interactive sessions")
     step = _sub(sessions, "step", "Send once and observe; repeat the same request id to query without resending")
     step.add_argument("id")
@@ -593,10 +611,24 @@ async def dispatch(args: argparse.Namespace) -> Any:
             import webbrowser
             result["browser_opened"] = webbrowser.open(result["url"])
         return result
+    if args.group in {"template", "profile"}:
+        if args.task or args.step_id or args.label:
+            raise RemoteError("invalid_arguments", "Named templates manage their own task IDs; query the returned task")
+        if args.group == "profile" and args.action == "list":
+            return await client.call("profile.list", {})
+        params = {}
+        if args.action != "list":
+            params["name"] = args.name
+        if args.action == "run":
+            params.update(target=args.target, request_id=args.request_id,
+                          expected_revision=args.revision, dry_run=not args.apply)
+        return await client.call("console.call", {"action": args.group + "." + args.action, "params": params})
     if args.group == "task":
         params = {}
         if args.action == "create":
             params = {"id": args.id, "title": args.title, "target": args.target}
+            if args.plan_file:
+                params["plan"] = json.loads(_read_text(args.plan_file))
             if args.artifact_file:
                 import hashlib
                 artifact = Path(args.artifact_file).expanduser().resolve()
@@ -683,7 +715,11 @@ async def dispatch(args: argparse.Namespace) -> Any:
             params = {"target": args.target}
             if args.command is not None:
                 params["command"] = args.command
-            if args.profile_file:
+            if args.profile_file and args.profile:
+                raise RemoteError("invalid_arguments", "Choose a named profile or --profile-file")
+            if args.profile:
+                params["profile"] = args.profile
+            elif args.profile_file:
                 params["profile"] = _read_json(args.profile_file)
             return await client.call("session.open", params)
         if args.action == "step-get":

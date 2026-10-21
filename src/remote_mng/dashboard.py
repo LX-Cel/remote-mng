@@ -1,4 +1,4 @@
-"""A local, separately authenticated view of the manager's recorded state."""
+"""A local, separately authenticated developer console for the manager."""
 from __future__ import annotations
 
 import hmac
@@ -130,7 +130,8 @@ def install_dashboard(app, manager, ui_token, status_provider):
 
     async def static(request):
         name = request.match_info.get("asset", "index.html")
-        types = {"index.html": "text/html", "app.js": "application/javascript", "style.css": "text/css"}
+        types = {"index.html": "text/html", "app.js": "application/javascript",
+                 "console.js": "application/javascript", "style.css": "text/css"}
         if name not in types:
             raise web.HTTPNotFound()
         content = files("remote_mng").joinpath("assets", "dashboard", name).read_bytes()
@@ -156,7 +157,8 @@ def install_dashboard(app, manager, ui_token, status_provider):
         sessions = await _resolve(manager.session_list())
         task_fields = ("id", "title", "target", "artifact", "created_at", "updated_at", "state", "sealed",
                        "outcome", "business_verification")
-        record_fields = ("id", "target", "kind", "state", "created_at", "updated_at", "state_label", "progress", "error", "shell")
+        record_fields = ("id", "target", "kind", "state", "created_at", "updated_at", "state_label", "progress",
+                         "error", "shell", "controller", "control_state", "control_expires_at", "profile")
         attention = []
         for target in visible_targets:
             report = target.get("inspection") or {}
@@ -178,6 +180,8 @@ def install_dashboard(app, manager, ui_token, status_provider):
                            for record in operations[:100]],
             "sessions": [{key: record[key] for key in record_fields if key in record}
                          for record in sessions[:100]],
+            "audit": [record for record in manager.store.list("console_audit")
+                      if record.get("kind") == "console_audit"][:100],
             "counts": {"tasks_returned": len(tasks), "operations_total": len(operations),
                        "sessions_total": len(sessions),
                        "active_sessions": sum(record.get("state") == "open" for record in sessions)},
@@ -312,7 +316,7 @@ def install_dashboard(app, manager, ui_token, status_provider):
         return result(await manager.dispatch(method, params))
 
     app.router.add_get("/ui/", static)
-    app.router.add_get("/ui/{asset:index.html|app.js|style.css}", static)
+    app.router.add_get("/ui/{asset:index.html|app.js|console.js|style.css}", static)
     app.router.add_get("/ui/api/overview", overview)
     app.router.add_get("/ui/api/update", update_state)
     app.router.add_post("/ui/api/update/check", update_check)
@@ -325,3 +329,5 @@ def install_dashboard(app, manager, ui_token, status_provider):
     app.router.add_post("/ui/api/targets/{name}/health", health)
     app.router.add_post("/ui/api/tasks/{id}/cleanup", cleanup)
     app.router.add_get("/ui/api/logs", logs)
+    from .console_api import install_console_api
+    install_console_api(app, manager)

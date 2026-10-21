@@ -1,15 +1,24 @@
 """Redact known secrets even when a terminal splits echoes across packets."""
-import os
 
 
 def target_secrets(target):
     values = []
+    from .credentials import resolve
+    from .errors import RemoteError
     for key in ("password_env", "passphrase_env", "username_env"):
-        if target.get(key) and os.environ.get(target[key]):
-            values.append(os.environ[target[key]])
+        try:
+            value = resolve(target, key)
+            if value:
+                values.append(value)
+        except RemoteError:
+            pass  # Readiness is reported separately; redaction never opens a connection.
     for step in target.get("login_steps", []) + (target.get("login_flow") or {}).get("steps", []):
-        if step.get("send_env") and os.environ.get(step["send_env"]):
-            values.append(os.environ[step["send_env"]])
+        try:
+            value = resolve(step, "send_env")
+            if value:
+                values.append(value)
+        except RemoteError:
+            pass
     for key in ("transfer", "jump", "proxy"):
         if isinstance(target.get(key), dict):
             values.extend(target_secrets(target[key]))

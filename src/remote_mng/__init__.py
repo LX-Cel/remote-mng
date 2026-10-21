@@ -1,3 +1,3 @@
 """Remote development tools with shared sessions and durable jobs."""
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

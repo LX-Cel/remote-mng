@@ -29,6 +29,8 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session open TARGET --profile-file
 
 这些模式是正则表达式，只说明观察到对应文本；工具不理解应用自己的业务成功条件。配置必须来自实际程序，不假定所有会话都是 Shell，也不内置特定测试命令或端口。没有配置退出命令时，不使用 `session leave`；按应用约定通过 `write` 发送明确的退出输入。
 
+开发者也可在本地控制台的“设置 → 交互模板”保存配置。先用 `profile list --json` 或 `profile get PROFILE --json` 读取，再使用 `session open TARGET --profile PROFILE --json`。命名模板和网页使用同一份配置，不重新猜测进入、退出命令。
+
 ## 写入后只观察本次的新输出
 
 下面的 `INPUT_TEXT` 和 `EXPECTED_TEXT` 来自当前任务；`SESSION_ID`、`CONTROL_TOKEN`、`WRITE_CURSOR` 都是实际返回值。
@@ -72,6 +74,8 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json session release SESSION_ID --token
 ```
 
 控制权已被持有时，先检查是否发生人工接管。只有任务已经明确要求接管时才使用 `claim --force` 撤销旧令牌，不自动夺回他人的会话。取得新令牌后先读状态与输出，再决定是否继续先前步骤。
+
+本地网页接管时，`session get` 返回 `controller=developer:...`。遇到 `developer_control`、`control_expired` 或 `control_state=developer_hold`，只读该会话的状态和输出，等待开发者在页面明确“归还控制权”。`claim --force` 不能绕过人工保留；不能换会话重放刚才的测试命令。页面关闭、锁定或租约过期均不代表用户同意续跑。归还后重新 claim，读取接管期间的新输出，核对当前 Shell/应用状态，再决定下一步。
 
 开发者在真实终端可执行 `session attach SESSION_ID --force` 接续同一会话；`Ctrl+]` 脱离本地界面并释放写入权，不向远端发送应用退出命令。Agent 自己继续用非交互 CLI。
 

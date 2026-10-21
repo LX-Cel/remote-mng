@@ -409,6 +409,8 @@ async def start_update(home=None, install_dir=None, claude_dir=None, plan_id=Non
         selected = version or current.get("previous_version")
         if not selected or selected not in current["versions"] or selected == current["current_version"]:
             raise RemoteError("rollback_unavailable", "Select a different retained compatible installed version")
+        from .config import ensure_config_compatible
+        ensure_config_compatible(home, selected)
         plan = {"id": uuid.uuid4().hex, "action": "rollback", "state": "ready", "created_at": time.time(),
                 "current_version": current["current_version"], "target_version": selected,
                 "home": str(home), "install_dir": str(root), "claude_dir": str(claude), "installation": current}

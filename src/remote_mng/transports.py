@@ -37,12 +37,8 @@ def _output_limit() -> RemoteError:
 
 
 def _secret(target: dict[str, Any], name: str) -> str | None:
-    key = target.get(name)
-    if not key:
-        return None
-    if key not in os.environ:
-        raise RemoteError("credential_missing", f"Environment variable {key!r} is not set")
-    return os.environ[key]
+    from .credentials import resolve
+    return resolve(target, name)
 
 
 def _error(exc: Exception, operation: str, *, unknown: bool = False, stage=None, route="target", trace=None) -> RemoteError:
@@ -255,7 +251,7 @@ async def _login(terminal: Terminal, target: dict[str, Any]) -> None:
     # Register every referenced credential before reading, including echoes split
     # between network frames. Unresolved references fail without login input.
     for node in nodes.values():
-        if node.get("send_env"):
+        if node.get("send_env") or node.get("send_ref"):
             try:
                 secret = _secret(node, "send_env")
             except RemoteError as exc:
@@ -281,8 +277,8 @@ async def _login(terminal: Terminal, target: dict[str, Any]) -> None:
                         buffer = (buffer + data)[-65536:]
                         transcript = (transcript + data)[-65536:]
                     trace.append({"stage": "login", "node": current, "state": "matched", "observed_at": time.time()})
-                    if "send_env" in node or "send" in node:
-                        value = _secret(node, "send_env") if "send_env" in node else str(node["send"])
+                    if "send_env" in node or "send_ref" in node or "send" in node:
+                        value = _secret(node, "send_env") if ("send_env" in node or "send_ref" in node) else str(node["send"])
                         await terminal.write((value or "") + ("\r\n" if node.get("newline", True) else ""))
                         trace.append({"stage": "login", "node": current, "state": "input_sent", "observed_at": time.time()})
                     if node.get("finish") or edge is None:

@@ -60,3 +60,4 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json target list
 8. 用户想看状态时可调用 `ui` 打开本地网页。访问 URL 含本地访问密钥，不放入项目文件、公开日志或总结。普通终端仍不支持网络断开后恢复原前台。
 9. 失败时读取 `error.details.diagnostic`：`stage`、`business_input`、`evidence`、`recovery_actions`。认证失败只报告并修复引用，不循环尝试同一凭据。`not_sent` 可确定此次业务未派发；`sent/unknown` 先查询原记录。修复配置使用 snapshot + patch 预览和 revision 校验，不根据终端内容猜目标身份或关闭主机校验。
 10. `helper health` 检查存储。日志 `gap/log_incomplete/logs_deleted` 说明证据缺失，不代表业务失败或成功。清理需明确选定已结束作业，先 preview 后按 plan_id apply，保留 ID 去重；不要因空间不足擅自删除其他文件。
+11. 开发者可通过控制台直接配置设备与模板并接管会话。遇到 `developer_control/control_expired/developer_hold`，等待页面明确归还，不强制抢回、不换会话重发。归还后重新读取状态与新增输出再继续。配置冲突重新 snapshot；复用已保存配置可查询 `profile list` 和 `template list`，详见交互、任务参考。

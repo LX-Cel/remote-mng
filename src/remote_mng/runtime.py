@@ -114,7 +114,7 @@ def runtime_manifest():
     signature = key.sign(b"remote-mng runtime check")
     key.public_key().verify(signature, b"remote-mng runtime check")
     base = resources.files("remote_mng").joinpath("assets")
-    required = ("dashboard/index.html", "dashboard/app.js", "dashboard/style.css",
+    required = ("dashboard/index.html", "dashboard/app.js", "dashboard/console.js", "dashboard/style.css",
                 "dashboard/update.html", "dashboard/update.js",
                 "job-helper-v1.sh", "job-storage-v1.sh", "claude_skill/remote-mng/SKILL.md", "claude_skill/remote-mng/scripts/rmg.sh")
     available = {name: bool(base.joinpath(*name.split("/")).read_bytes()) for name in required}

@@ -12,6 +12,7 @@ from .errors import RemoteError
 from .jobs import JobClient
 from .skill_install import skill_status
 from .redact import Redactor, target_secrets
+from .credentials import authentication
 
 
 def check(name, state, message, advice=None, **details):
@@ -60,6 +61,12 @@ async def inspect_target(manager, target, directory=None):
     cfg = manager.config.target(target, "check")
     redactor = Redactor(target_secrets(cfg))
     checks = []
+    for reference in authentication(cfg)["references"]:
+        if reference.get("storage") == "memory":
+            checks.append(check("temporary_credential_" + reference["field"],
+                                "pass" if reference["available"] else "fail",
+                                "Temporary credential is available" if reference["available"] else "Temporary credential expired",
+                                None if reference["available"] else "Enter the credential again in the console; values are never stored on disk."))
     # Validate only referenced credentials, without copying their values to diagnostics.
     credential_configs = [cfg]
     if cfg.get("transfer"):

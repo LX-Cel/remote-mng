@@ -77,4 +77,18 @@ bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json task invoke deploy-01 --step-id up
 
 用户要查看时调用 `ui` 打开本地网页，`ui --no-open` 仅返回地址。URL 含本地访问密钥，不分享。页面显示任务、设备检查、执行日志、观察时间和日志缺口。
 
+控制台也支持设备与认证引用、交互模板、Helper、配置备份和人工接管。配置被开发者修改后，重新读取 snapshot/目标状态；出现 revision 冲突时不强行覆盖。已有作业占用的设备别名不能改指向另一台设备，必要时创建明确的新别名。
+
+已知多步骤计划可在首次创建任务时传 `--plan-file ./plan.json`，文件为 `[{"label":"...","method":"exec.start","params":{"command":"..."}}]`。计划供开发者审查，不会被自动执行，也不证明相关步骤已完成；实际行动仍使用稳定的 task/step ID。
+
+开发者在“设置 → 常用操作”保存的固定命令可由 Agent 复用：
+
+```sh
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json template list
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json template get OPERATION
+bash "<SKILL_BASE_DIR>/scripts/rmg.sh" --json template run OPERATION --target TARGET --request-id REQUEST_ID --revision REVIEWED_REVISION
+```
+
+最后一条默认仅预览。核对目标、固定命令、工作目录和现有授权后，用相同参数加 `--apply` 提交。保存返回 task_id，随后 `task get TASK_ID --refresh` 和读取日志；不把 submitted 当成功。响应不明时重用原 request-id/版本只返回原任务，不换 ID 重发。命名操作不插值变量，不在命令中嵌入密码；长任务选择 job 模板并先确认 Helper 能力。
+
 明确需要取消时，用网页确认或 `task cancel TASK_ID`。只取消本任务自己创建的受管作业；取消请求不等于已经退出，之后刷新确认。普通 exec、前台应用和其他业务进程不会因此被终止。

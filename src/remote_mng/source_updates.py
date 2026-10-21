@@ -473,6 +473,8 @@ async def rollback_source(prepared, home, claude):
         old = next((wheel for wheel in prepared["rollback_wheels"] if _normal(wheel["name"]) == "remote-mng"), None)
         if not old:
             _fail("invalid_source_update", "The source snapshot lacks the previous remote-mng package")
+        from .config import ensure_config_compatible
+        ensure_config_compatible(home, old["version"])
         constraints = work / "rollback-constraints.txt"
         dist._safe_path(constraints)
         constraints.write_text("".join(f"{wheel['name']}=={wheel['version']}\n" for wheel in prepared["rollback_wheels"]), encoding="utf-8")

@@ -16,6 +16,7 @@ class Store:
         self.logs_dir = home / "logs"
         self.logs_dir.mkdir(mode=0o700, exist_ok=True)
         self._logs = {}
+        self.max_log_bytes = 64 * 1024 * 1024
         self.db = sqlite3.connect(home / "state.sqlite3")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, kind TEXT, data TEXT)")
@@ -84,7 +85,7 @@ class Store:
     def append(self, id, data, stream="stdout"):
         base, path = self._log(id, stream)
         payload = data.encode("utf-8") if isinstance(data, str) else data
-        max_bytes = max(4, int(os.environ.get("RMG_MAX_LOG_BYTES", 64 * 1024 * 1024)))
+        max_bytes = max(4, int(os.environ.get("RMG_MAX_LOG_BYTES", self.max_log_bytes)))
         retained = path.stat().st_size if path.exists() else 0
         end = base + retained + len(payload)
         if retained + len(payload) <= max_bytes:

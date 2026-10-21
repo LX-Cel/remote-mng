@@ -37,17 +37,21 @@ def validate_routes(cfg):
         from .config import Target
         Target.model_validate({**jump, "protocol": "ssh"})
     if proxy:
-        if not isinstance(proxy, dict) or set(proxy) - {"type", "host", "port", "username_env", "password_env"}:
+        if not isinstance(proxy, dict) or set(proxy) - {"type", "host", "port", "username_env", "password_env", "username_ref", "password_ref"}:
             raise ValueError("Invalid proxy fields")
         if proxy.get("type") not in ("http", "socks5") or not isinstance(proxy.get("host"), str) or not proxy["host"]:
             raise ValueError("Proxy requires type and host")
         if not isinstance(proxy.get("port"), int) or not 1 <= proxy["port"] <= 65535:
             raise ValueError("Proxy port must be in [1,65535]")
-        if bool(proxy.get("username_env")) != bool(proxy.get("password_env")):
+        if bool(proxy.get("username_env") or proxy.get("username_ref")) != bool(proxy.get("password_env") or proxy.get("password_ref")):
             raise ValueError("Proxy authentication requires both environment references")
         for key in ("username_env", "password_env"):
             if key in proxy and (not isinstance(proxy[key], str) or not regex.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", proxy[key])):
                 raise ValueError("Proxy credentials must be environment references")
+        from .credentials import valid_reference
+        for key in ("username", "password"):
+            if proxy.get(key + "_ref") and (not valid_reference(proxy[key + "_ref"]) or proxy.get(key + "_env")):
+                raise ValueError("Proxy temporary credentials require one valid reference")
 
 
 def validate_login(steps, flow):
@@ -58,6 +62,10 @@ def validate_login(steps, flow):
             raise ValueError("Login step timeout must be in (0,300]")
         if "send_env" in step and (not isinstance(step["send_env"], str) or not regex.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", step["send_env"])):
             raise ValueError("Login credentials must use an environment variable name")
+        if "send_ref" in step:
+            from .credentials import valid_reference
+            if not valid_reference(step["send_ref"]):
+                raise ValueError("Invalid temporary login credential reference")
     if not flow:
         return
     if steps:
@@ -73,14 +81,18 @@ def validate_login(steps, flow):
         raise ValueError("Login flow timeout must be in (0,300]")
     ids = set()
     for node in nodes:
-        if not isinstance(node, dict) or set(node) - {"id", "expect", "send", "send_env", "newline", "next", "branches", "finish", "timeout"}:
+        if not isinstance(node, dict) or set(node) - {"id", "expect", "send", "send_env", "send_ref", "newline", "next", "branches", "finish", "timeout"}:
             raise ValueError("Invalid login node")
         name = node.get("id")
         if not isinstance(name, str) or not regex.fullmatch(r"[\w.-]{1,64}", name) or name in ids:
             raise ValueError("Login node IDs must be unique")
         ids.add(name)
-        if "send" in node and "send_env" in node:
-            raise ValueError("Use send OR send_env")
+        if sum(key in node for key in ("send", "send_env", "send_ref")) > 1:
+            raise ValueError("Choose one login input source")
+        if "send_ref" in node:
+            from .credentials import valid_reference
+            if not valid_reference(node["send_ref"]):
+                raise ValueError("Invalid temporary login credential reference")
         if "send_env" in node and (not isinstance(node["send_env"], str) or not regex.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", node["send_env"])):
             raise ValueError("Login credentials must use an environment variable name")
         if not 0 < float(node.get("timeout", 15)) <= 300:
@@ -99,7 +111,7 @@ def validate_login(steps, flow):
             if not isinstance(pattern, str) or not 0 < len(pattern) <= 2048:
                 raise ValueError("Login patterns must contain 1-2048 characters")
             regex.compile(pattern)
-        if node.get("finish") and (node.get("next") or branches or "send" in node or "send_env" in node):
+        if node.get("finish") and (node.get("next") or branches or "send" in node or "send_env" in node or "send_ref" in node):
             raise ValueError("A finish node only observes the final prompt")
     if flow.get("start") not in ids:
         raise ValueError("Login start node is missing")
@@ -137,7 +149,7 @@ async def proxy_socket(proxy, host, port, timeout):
             if sock is None:
                 raise RemoteError("proxy_unreachable", "Proxy TCP connection failed")
             user = password = None
-            if proxy.get("username_env"):
+            if proxy.get("username_env") or proxy.get("username_ref"):
                 from .transports import _secret
                 user = _secret(proxy, "username_env")
                 password = _secret(proxy, "password_env")
