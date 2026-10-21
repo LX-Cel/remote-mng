@@ -122,6 +122,8 @@ function save(path,kind,text,    p,n,r,a) {
   if(operation=="result") {
     if(path=="") result_root=kind
     if(path=="/state" && kind=="string") result_state=text
+    if(path=="/version" && kind=="string") result_version=text
+    if(path=="/current_version" && kind=="string") result_current_version=text
     if((path=="/message" || path=="/error/message") && kind=="string") result_message=text
     if(path=="/advice" && kind=="string") result_advice=text
     return
@@ -193,7 +195,9 @@ END {
   if(operation=="result") {
     if(result_root!="object") die()
     gsub(/[[:cntrl:]]/," ",result_message); gsub(/[[:cntrl:]]/," ",result_advice)
-    print result_state; print substr(result_message,1,800); print substr(result_advice,1,800)
+    actual_version=(result_version!="")?result_version:result_current_version
+    if(actual_version!="" && actual_version !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) die()
+    print result_state; print substr(result_message,1,800); print substr(result_advice,1,800); print actual_version
     exit
   }
   best=0
@@ -339,7 +343,7 @@ if ! awk -v operation=result -f "$stage/parser.awk" "$stage/bootstrap-result.jso
   printf 'Installation did not return a verified result. Details: %s\n' "$stage/bootstrap-result.json" >&2
   fail 'The installation may need attention. Ask your Agent to inspect the retained logs before retrying.'
 fi
-{ IFS= read -r outcome_state; IFS= read -r outcome_message; IFS= read -r outcome_advice; } < "$stage/outcome"
+{ IFS= read -r outcome_state; IFS= read -r outcome_message; IFS= read -r outcome_advice; IFS= read -r outcome_version; } < "$stage/outcome"
 if [ "$bootstrap_exit" -ne 0 ] || [ "$outcome_state" != succeeded ]; then
   keep_logs=yes
   [ -z "$outcome_message" ] || printf 'remote-mng: %s\n' "$outcome_message" >&2
@@ -347,4 +351,4 @@ if [ "$bootstrap_exit" -ne 0 ] || [ "$outcome_state" != succeeded ]; then
   printf 'Diagnostic logs: %s\n' "$stage" >&2
   fail 'Installation or update needs attention. Existing sessions were not forcibly stopped. Ask your Agent to inspect these logs and resolve the reported blocker.'
 fi
-printf '\nremote-mng %s is ready. Open a new Claude Code session to load the updated Skill.\n' "${selected_tag#v}"
+printf '\nremote-mng %s is ready. Open a new Claude Code session to load the updated Skill.\n' "${outcome_version:-${selected_tag#v}}"

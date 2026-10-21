@@ -275,6 +275,24 @@ async def test_final_verification_failure_recovers_old_version_and_reports_failu
 
 
 @pytest.mark.asyncio
+async def test_failed_recovery_does_not_report_the_unrestored_old_version(tmp_path, environment, monkeypatch):
+    await install_version(tmp_path, environment)
+    environment["verify_fail"].add("0.6.0")
+    activate = dist.activate_prepared
+
+    async def fail_rollback(prepared, **options):
+        if prepared["version"] == "0.5.0":
+            raise RemoteError("rollback_failed", "The old version could not be reactivated")
+        return await activate(prepared, **options)
+
+    monkeypatch.setattr(dist, "activate_prepared", fail_rollback)
+    result = await install_version(tmp_path, environment, "0.6.0")
+    assert result["state"] == "failed" and result["recovery"]["state"] == "needs_attention"
+    assert result["version"] == "0.6.0"
+    assert dist.installation_status(environment["paths"]["install_dir"])["current_version"] == "0.6.0"
+
+
+@pytest.mark.asyncio
 async def test_fresh_startup_failure_reports_installed_but_blocked(tmp_path, environment):
     environment["verify_fail"].add("0.5.0")
     result = await install_version(tmp_path, environment)

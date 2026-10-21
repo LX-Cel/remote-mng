@@ -137,10 +137,13 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
         blockers = updates._blockers(installation, daemon, skill)
         if blockers:
             raise RemoteError("update_blocked", "Finish the reported activity, then run this same installer again.", {"blockers": blockers})
+        # Source updates retain their uv prefix; root is only the standalone
+        # coordination context and must not be reported as the program location.
+        reported_root = Path(installation["prefix"]) if source_binding else root
         current_version = installation["current_version"]
         if tuple(map(int, current_version.split("."))) > tuple(map(int, version.split("."))):
             return _response({"state": "succeeded", "changed": False,
-                              "message": "A newer version is already installed; it was retained."}, root, current_version, "unchanged")
+                              "message": "A newer version is already installed; it was retained."}, reported_root, current_version, "unchanged")
         if current_version == version:
             if source_binding:
                 # The helper already verified the original source files/Skill.
@@ -150,7 +153,7 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
                 await dist.prepare_artifact(cached, sha256, install_dir=root, home=home, claude_dir=claude, source=source)
                 await _finish(home, root, claude, {"id": update_id}, version, no_start)
             updates.save_channel(home, "preview" if preview else "stable")
-            return _response({"state": "succeeded", "changed": False}, root, version, "unchanged")
+            return _response({"state": "succeeded", "changed": False}, reported_root, version, "unchanged")
         plan = {"id": uuid.uuid4().hex, "action": "update", "state": "ready", "created_at": time.time(),
                 "current_version": current_version, "target_version": version,
                 "home": str(home), "install_dir": str(root), "claude_dir": str(claude),
@@ -172,6 +175,14 @@ async def install(archive, sha256, *, home=None, install_dir=None, claude_dir=No
         # The installer is already a dedicated foreground operation. Keep the
         # journal/recovery semantics without creating another worker process.
         result = await updates.run_worker(home, update_id, monitor_lifetime=0)
-        return _response(result, root, version if result["state"] == "succeeded" else current_version, "updated")
+        actual_version = version
+        if result["state"] != "succeeded":
+            actual_version = result.get("recovery", {}).get("version")
+            if not source_binding:
+                try:
+                    actual_version = dist.installation_status(root).get("current_version")
+                except RemoteError:
+                    actual_version = None
+        return _response(result, reported_root, actual_version, "updated")
     finally:
         lock.release()

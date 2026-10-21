@@ -359,6 +359,21 @@ def test_bootstrap_blocker_remains_failure(fixture):
     assert "Active session" in result.stderr
 
 
+@pytest.mark.parametrize(("extra", "expected"), [
+    ({"version": "0.6.0", "current_version": "0.4.0"}, "0.6.0"),
+    ({"version": "0.5.0"}, "0.5.0"),
+    ({"current_version": "0.6.0"}, "0.6.0"),
+    ({}, "0.5.0"),
+])
+def test_completed_installer_reports_actual_retained_version(fixture, extra, expected):
+    _, run, _, _ = fixture
+    result = run(RMG_TEST_JSON=json.dumps({"state": "succeeded", "action": "unchanged", **extra}))
+    assert result.returncode == 0, result.stderr
+    assert f"remote-mng {expected} is ready" in result.stdout
+    if expected != "0.5.0":
+        assert "remote-mng 0.5.0 is ready" not in result.stdout
+
+
 @pytest.mark.parametrize("state", ["queued", "preparing", "blocked", "failed", "ready", "unknown"])
 def test_only_completed_bootstrap_is_reported_ready(fixture, state):
     directory, run, _, _ = fixture
