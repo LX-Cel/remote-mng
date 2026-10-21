@@ -1,15 +1,15 @@
 # 安装与手动更新
 
-**0.6.0 单文件离线安装器正在验收，尚未发布。** 以下是候选入口的使用方式，不能将文件名视为已经可下载。已发布的 [0.5.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0) 继续提供可选在线脚本；历史包的手工维护保留在高级说明中。
+**[0.6.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.6.0) 已提供单文件离线安装器。** 下载对应系统的一个文件后，可直接带入内网安装和更新；联网脚本与历史包维护保留在高级说明中。
 
 ## 推荐：下载一个离线安装包
 
 安装包内含程序及运行依赖、Claude Code Skill、远端 Linux helper 和安装逻辑。将对应本机系统的一个文件带入内网即可，安装过程不访问 GitHub、Python 软件源或其他外网下载地址，也不需要外部 ZIP、wheel 或下载器。
 
-| 本机系统 | 候选安装包 | 运行方式 |
+| 本机系统 | 离线安装包 | 运行方式 |
 | --- | --- | --- |
-| Windows x86_64 | `remote-mng-0.6.0-windows-x86_64-setup.exe` | 双击 |
-| Linux / WSL x86_64 | `remote-mng-0.6.0-linux-x86_64-setup.run` | 在当前环境中赋予执行权限后运行 |
+| Windows x86_64 | [remote-mng-0.6.0-windows-x86_64-setup.exe](https://github.com/LX-Cel/remote-mng/releases/download/v0.6.0/remote-mng-0.6.0-windows-x86_64-setup.exe) | 双击 |
+| Linux / WSL x86_64 | [remote-mng-0.6.0-linux-x86_64-setup.run](https://github.com/LX-Cel/remote-mng/releases/download/v0.6.0/remote-mng-0.6.0-linux-x86_64-setup.run) | 在当前环境中赋予执行权限后运行 |
 
 Linux / WSL：
 
@@ -185,7 +185,7 @@ uv run --frozen python scripts/smoke_release.py --build-result dist/release/buil
 
 smoke 的 Python 充当测试服务器与断言工具；被测 CLI、后台 daemon、Skill 绑定来自独立包，使用隔离安装和状态目录。分发层覆盖含中文、空格与单引号的路径、SSH 返回码、SFTP、Telnet 去重和兼容回退；Linux 还运行真实 detached helper 作业并核对副作用恰好一次。worker 层另验证真实更新进程、管理器停启、进度页和离线回退，GitHub 传输使用固定本地资产夹具，不替换安装器或管理器。边界与实际结果见 [0.4 验收记录](v04-validation.md)。
 
-`.github/workflows/release.yml` 默认要求两平台的真实前驱分发升级、前台安装、worker 更新和 uv 更新／回退全部通过；手动工作流保存制品，tag 工作流在全部成功后正式发布。0.5 的 Linux 发行验收通过，Windows 仍受宿主进程创建等条件限制，正式自动发布未执行。当前 [v0.5.0 预发布](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0) 使用通过验收的 Ubuntu 22.04 包和经过完整本地安装、升级及分发回退的 Windows 包，未使用失败的 Windows CI 制品。完整来源与摘要见 [0.5 验收记录](v05-validation.md)。
+`.github/workflows/release.yml` 默认要求两平台的真实前驱分发升级、前台安装、单文件离线安装、worker 更新和 uv 更新／回退全部通过；手动工作流保存制品，tag 工作流在全部成功后正式发布。0.6 的 Ubuntu 22.04 发行验收全部通过，Windows 仍受宿主进程创建等条件限制，正式自动发布未执行。当前 [v0.6.0 预发布](https://github.com/LX-Cel/remote-mng/releases/tag/v0.6.0) 使用通过验收的 Linux CI 制品和经过完整本地离线安装、官方 0.5 升级及分发回退的 Windows 制品，未使用失败的 Windows CI 包。完整来源与摘要见 [0.6 验收记录](v06-validation.md)。
 
 0.4.0 本地 Windows 分发层验收通过；当前 Codex 宿主中的 worker 自动更新受到嵌套 Job Object 限制，已验证会提前报告阻碍并保留原状态，结果标记为 `passed_blocked_safely`，不能称为自动更新成功。发布 CI 不使用这个诊断模式替代完整成功条件。普通终端也须经过实际检查，预启动不能保证后续更新进程具有相同权限。
 

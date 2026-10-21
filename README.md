@@ -6,7 +6,7 @@
 
 工具随包提供 Claude Code Skill，主入口是 `rmg` CLI。Skill 告诉 Agent 如何检查条件、记录步骤、保存任务 ID，以及如何处理断线和结果不明。MCP 保留为可选适配层，默认使用不需要配置 MCP。remote-mng 本身不内置模型，也不替代项目的构建脚本和业务验证规则。
 
-仓库已公开。正在验收的 **0.6.0 离线安装器尚未发布**；下面介绍新的安装方式，正式资产上传后才能下载使用。已发布的 [v0.5.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.5.0) 仍可通过可选在线脚本安装；其验证范围见 [0.5 验收记录](docs/v05-validation.md)。
+仓库已公开，**[v0.6.0 预览版](https://github.com/LX-Cel/remote-mng/releases/tag/v0.6.0)** 已提供 Windows 和 Linux/WSL 单文件离线安装器。真实首装、重复运行及官方 0.5 升级已通过，具体来源与平台边界见 [0.6 验收记录](docs/v06-validation.md)。
 
 ## 它解决什么问题
 
@@ -26,12 +26,12 @@
 
 **下载一个适合本机系统的离线安装包，运行即可。** 程序、依赖、Claude Code Skill 和远端 helper 均包含在安装包中，安装时不访问 GitHub 或软件源，也不要求预装 Python、uv、GitHub CLI、curl 或 unzip。可在能联网的电脑下载，再按公司的文件流转要求带入内网。
 
-0.6.0 候选安装包的文件名及使用方式如下；**目前尚无可下载的 0.6.0 发布资产**。
+选择对应系统下载，将这个文件带入需要安装的电脑：
 
 | 本机系统 | 离线安装包 | 怎么安装 |
 | --- | --- | --- |
-| Windows x86_64 | `remote-mng-0.6.0-windows-x86_64-setup.exe` | 双击运行 |
-| Linux / WSL x86_64 | `remote-mng-0.6.0-linux-x86_64-setup.run` | 赋予执行权限后运行，见下方两行命令 |
+| Windows x86_64 | [下载安装 EXE](https://github.com/LX-Cel/remote-mng/releases/download/v0.6.0/remote-mng-0.6.0-windows-x86_64-setup.exe) | 双击运行 |
+| Linux / WSL x86_64 | [下载安装 RUN](https://github.com/LX-Cel/remote-mng/releases/download/v0.6.0/remote-mng-0.6.0-linux-x86_64-setup.run) | 赋予执行权限后运行，见下方两行命令 |
 
 ```sh
 chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
@@ -45,7 +45,7 @@ chmod +x ./remote-mng-0.6.0-linux-x86_64-setup.run
 <details>
 <summary>可选：网络可用时，用在线脚本安装和更新</summary>
 
-已发布的 0.5.0 支持在线脚本。先将脚本下载到本地，查看内容后在普通系统终端运行。Windows 使用 [install.ps1](install.ps1)，Linux/WSL 使用 [install.sh](install.sh)。它们会联网选择并下载版本；手动更新可重新运行同一脚本。完整命令和适用条件见 [在线安装说明](docs/distribution.md#可选在线安装)。
+网络可用时也可以使用在线脚本。先将脚本下载到本地，查看内容后在普通系统终端运行。Windows 使用 [install.ps1](install.ps1)，Linux/WSL 使用 [install.sh](install.sh)。它们会联网选择并下载版本；手动更新可重新运行同一脚本。完整命令和适用条件见 [在线安装说明](docs/distribution.md#可选在线安装)。
 
 </details>
 
@@ -105,7 +105,7 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 
 在线安装则按保存的正式或预览通道查询 GitHub，支持让 Agent 更新，或重跑在线脚本。活动前台、正在执行的操作、Skill 本地修改或兼容性不明会阻止切换；安装器不为了更新强行关闭它们。0.3 等旧版缺少安全更新协议，正在运行的旧管理器会明确阻碍迁移，先让 Agent 核对活动和作业 ID，在你允许普通前台断开后处理。详情见 [更新与恢复](docs/updates.md)。
 
-独立安装保留兼容版本供回退；受支持的 uv 安装在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。各平台实际验证范围见 [0.5 验收记录](docs/v05-validation.md)。
+独立安装保留兼容版本供回退；受支持的 uv 在线更新在替换前缓存原程序和依赖，供恢复。更新不重新提交远端作业，也不批量更新设备 helper。失败后恢复旧版不等于升级成功；更新后新开 Claude Code 会话加载新版 Skill。各平台实际验证范围见 [0.6 验收记录](docs/v06-validation.md)。
 
 个人部署规范可以保存在 `~/.claude/remote-mng/USER.md`，自定义 Claude 配置目录时跟随该目录。安装、升级和卸载都不修改这个文件；不要直接修改托管的 `skills/remote-mng` 目录。已存在的用户修改会被保护并报告冲突，不能靠强制覆盖跳过。
 
@@ -128,7 +128,7 @@ helper 是随客户端分发的轻量 Shell 脚本，通过已配置的 SSH 或�
 | 操作交互前台和同一 Shell | [Agent 操作约定](docs/agent-guide.md) · [Shell 命令](docs/shell-v03.md) |
 | 管理远端长任务、日志和空间 | [helper 存储与维护](docs/helper-storage-v03.md) |
 | 查看更新状态、回退和失败恢复 | [更新指南](docs/updates.md) |
-| 了解原理和已验证边界 | [0.5 验收记录](docs/v05-validation.md) · [交互原理演示](docs/explainer-v02.html) · [0.4 历史记录](docs/v04-validation.md) |
+| 了解原理和已验证边界 | [0.6 验收记录](docs/v06-validation.md) · [交互原理演示](docs/explainer-v02.html) · [0.5 历史记录](docs/v05-validation.md) |
 
 版本命名的历史文档记录当时的范围，不代表新版验证已完成。Agent 的完整参数可从 `rmg schema --json` 和各命令的 `--help` 获取；`python -m remote_mng` 与 `rmg` 使用同一入口。
 
@@ -151,7 +151,7 @@ uv run --frozen python scripts/build_release.py
 uv run --frozen python scripts/smoke_release.py --build-result dist/release/build-result.json
 ```
 
-[发布流水线](.github/workflows/release.yml) 验证真实旧版的分发升级/回退、首装与重复安装，以及独立更新进程和 uv 离线恢复。0.5 的 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/39552197928) 全部通过；[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/39552210533) 的 Linux 全部通过，Windows 受宿主进程限制等条件未通过。预发布的 Windows 包来自同源码的本机构建并通过真实安装、升级及分发回退，未使用失败的 Windows CI 包；后台更新限制仍明确保留，详见 [验收与来源](docs/v05-validation.md)。正式自动发布门槛未放宽，安全阻碍不算升级成功。
+[发布流水线](.github/workflows/release.yml) 验证真实旧版的分发升级/回退、单文件离线首装与重复安装，以及独立更新进程和 uv 离线恢复。0.6 的 [六组基础 CI](https://github.com/LX-Cel/remote-mng/actions/runs/39557186165) 全部通过；[发行验收](https://github.com/LX-Cel/remote-mng/actions/runs/39557187489) 的 Ubuntu 22.04 全部通过，Windows 受宿主进程限制等条件未通过。预发布的 Windows 包来自同源码的本机构建并通过真实离线安装、官方 0.5 升级及分发回退，未使用失败的 Windows CI 包；后台更新限制仍保留，详见 [验收与来源](docs/v06-validation.md)。正式自动发布门槛未放宽，安全阻碍不算安装成功。
 
 ## 许可证
 
